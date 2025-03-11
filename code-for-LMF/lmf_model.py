@@ -6,6 +6,41 @@ from transformers.models.bert.modeling_bert import BertPreTrainedModel, BertMode
 from transformers.models.roberta.modeling_roberta import RobertaPreTrainedModel, RobertaModel
 from transformers.modeling_outputs import SequenceClassifierOutput, BaseModelOutputWithPoolingAndCrossAttentions
 
+import math
+
+class MaskWeightLayer(nn.Module):
+
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self.attn = nn.MultiheadAttention(embed_dim = config.hidden_size, num_heads=8)
+        self.pool = nn.AdaptiveAvgPool1d(1)  
+        # self.fc = nn.Linear(embed_dim, output_dim)  # 调整维度
+
+    def forward1(self, x):
+        # input: (batch_size, mask_num, embed_dim)
+        hidden_size = self.config.hidden_size
+        Q = K = V = x
+        scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(hidden_size)
+        attn_weights = torch.softmax(scores, dim=-1)
+        output = torch.matmul(attn_weights, V)
+        return output
+
+    def forward(self, x):
+        # pass
+        # x: (batch_size, mask_num, embed_dim)
+        attn_output, weights = self.attn(x, x, x)#
+        # 沿序列长度维度池化
+        pooled_output = self.pool(attn_output.transpose(1, 2)).squeeze(2) 
+        return pooled_output
+        
+
+
+def wrap_compute_weight_mask(cls, pool_output):
+    output = cls.layer_mask_weight(pool_output)
+    return output
+
+
 
 class MLPLayer(nn.Module):
     """
@@ -126,6 +161,8 @@ def cl_init(cls, config):
     cls.weights_mask = weights_mask
 
     cls.sim = Similarity(temp=cls.model_args.temp)
+
+    cls.layer_mask_weight = MaskWeightLayer(config)
     cls.init_weights()
 
 
@@ -201,6 +238,7 @@ def cl_forward(cls,
     if cls.model_args.mask_embedding_sentence:
         last_hidden = outputs.last_hidden_state
 
+        # 原始last_hidden中有96个样本，每个样本52个时间步。假设每个样本中平均有两个掩码标记，总共有96 * 2=192个掩码位置。因此，索引后的pooler_output形状就是[192, 768]，即192个掩码位置，每个位置768个特征。
         pooler_output = last_hidden[input_ids == cls.mask_token_id]
 
         pooler_output = pooler_output.view(-1, cls.mask_num, pooler_output.shape[-1])
@@ -213,9 +251,11 @@ def cl_forward(cls,
         # pooler_output = pooler_output[:, cls.mask_num - 1, :]
 
         #动态mask加权
-        weights_mask = cls.weights_mask.unsqueeze(1).to(input_ids.device)  # [mask_num, 1]
-        pooler_output = pooler_output.mul(weights_mask).sum(dim=1)  # [batch_size, hidden_dim]
+        # weights_mask = cls.weights_mask.unsqueeze(1).to(input_ids.device)  # [mask_num, 1]
+        # pooler_output = pooler_output.mul(weights_mask).sum(dim=1)  # [batch_size, hidden_dim]
       
+        #注意力机制动态分配权限提取mask
+        pooler_output = wrap_compute_weight_mask(cls, pooler_output)
 
         if cls.model_args.mask_embedding_sentence_delta:
             if cls.model_args.mask_embedding_sentence_org_mlp:

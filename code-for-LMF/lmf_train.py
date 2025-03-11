@@ -25,14 +25,13 @@ from transformers.trainer_utils import is_main_process
 from transformers.tokenization_utils_base import PaddingStrategy, PreTrainedTokenizerBase
 from transformers.file_utils import cached_property, torch_required, is_torch_tpu_available
 
-from complexity_util import compute_weights
-
+from lmf_log_util import getMyLogger
 
 # CoT-BERT Authors: our default batch size for BERT-base and RoBERT-base is 256 
 os.environ['CUDA_VISIBLE_DEVICES'] = '0, 1'
 
 
-logger = logging.getLogger(__name__)
+logger = getMyLogger(__name__)
 MODEL_CONFIG_CLASSES = list(MODEL_FOR_MASKED_LM_MAPPING.keys())
 MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
 
@@ -480,7 +479,6 @@ def main():
     # See all possible arguments in src/transformers/training_args.py
     # or by passing the --help flag to this script.
     # We now keep distinct sets of args, for a cleaner separation of concerns.
-
     parser = HfArgumentParser((ModelArguments, DataTrainingArguments, OurTrainingArguments))
 
     # CoT-BERT Authors: The following configuration is only applicable to CoT-BERT-base. 
@@ -529,12 +527,12 @@ def main():
             "Use --overwrite_output_dir to overcome."
         )
 
-    # Setup logging
-    logging.basicConfig(
-        format="%(asctime)s - %(levelname)s - %(name)s -   %(message)s",
-        datefmt="%m/%d/%Y %H:%M:%S",
-        level=logging.INFO if is_main_process(training_args.local_rank) else logging.WARN,
-    )
+    # # Setup logging
+    # logging.basicConfig(
+    #     format="%(asctime)s - %(levelname)s - %(name)s -   %(message)s",
+    #     datefmt="%m/%d/%Y %H:%M:%S",
+    #     level=logging.INFO if is_main_process(training_args.local_rank) else logging.WARN,
+    # )
 
     # Log on each process the small summary:
     logger.warning(
