@@ -5,7 +5,6 @@
 huggingface-cli 是 Hugging Face 官方提供的命令行工具，自带完善的下载功能。
 1. 安装依赖
 pip install -U huggingface_hub
-Copy
 2. 设置环境变量
 Linux
 export HF_ENDPOINT=https://hf-mirror.com
@@ -17,11 +16,11 @@ huggingface-cli download --resume-download google-bert/bert-base-uncased --local
 
 
 ## 配置/ect/hosts
-# 3.167.112.25 huggingface.co
+echo "# 3.167.112.25 huggingface.co
 185.199.108.133 raw.githubusercontent.com
 185.199.109.133 raw.githubusercontent.com
 185.199.110.133 raw.githubusercontent.com
-185.199.111.133 raw.githubusercontent.com
+185.199.111.133 raw.githubusercontent.com" >> /etc/hosts
 
 ## 修改train.py
     args_list = [
