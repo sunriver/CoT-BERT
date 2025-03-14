@@ -26,6 +26,7 @@
    ```bash
    cd /usr/src
    sudo wget https://www.python.org/ftp/python/3.9.0/Python-3.9.0.tgz
+   wget https://www.python.org/ftp/python/3.8.10/Python-3.8.10.tgz  
    ```
 
 4. **解压文件**：

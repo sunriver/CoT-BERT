@@ -16,6 +16,13 @@ huggingface-cli download --resume-download google-bert/bert-base-uncased --local
 “./pretrain_models/bert-base-uncased”是自定义目录
 
 
+## 配置/ect/hosts
+# 3.167.112.25 huggingface.co
+185.199.108.133 raw.githubusercontent.com
+185.199.109.133 raw.githubusercontent.com
+185.199.110.133 raw.githubusercontent.com
+185.199.111.133 raw.githubusercontent.com
+
 ## 修改train.py
     args_list = [
         '--model_name_or_path', '/data/output/worksapce_gpu32/projects/pretrain_models/bert-base-uncased',
