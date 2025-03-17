@@ -244,7 +244,7 @@ def cl_forward(cls,
         pooler_output = pooler_output.view(-1, cls.mask_num, pooler_output.shape[-1])
         # 融合所有 mask 的输出
         # pooler_output = pooler_output.sum(dim=1)
-        # pooler_output = pooler_output.max(dim=1)
+        pooler_output, _ = pooler_output.max(dim=1)
         # pooler_output = pooler_output.mean(dim=1)
 
         # 保留最后一个maks
@@ -255,7 +255,7 @@ def cl_forward(cls,
         # pooler_output = pooler_output.mul(weights_mask).sum(dim=1)  # [batch_size, hidden_dim]
       
         #注意力机制动态分配权限提取mask
-        pooler_output = wrap_compute_weight_mask(cls, pooler_output)
+        # pooler_output = wrap_compute_weight_mask(cls, pooler_output)
 
         if cls.model_args.mask_embedding_sentence_delta:
             if cls.model_args.mask_embedding_sentence_org_mlp:
