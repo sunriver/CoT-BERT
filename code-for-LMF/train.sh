@@ -7,7 +7,7 @@ mkdir -p ./logs
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 
 # 定义日志文件路径
-LOG_FILE="./logs/run_log_${TIMESTAMP}.txt"
+LOG_FILE="./logs/train_log_${TIMESTAMP}.txt"
 
 # 运行程序并输出到控制台和文件
 python lmf_train.py 2>&1 | tee "$LOG_FILE"
