@@ -1,4 +1,4 @@
-model_name_or_path: "../result/CoT-Bert"
+model_name_or_path: "../result/CoT-LMF"
 mode: "test"
 mask_embedding_sentence: true  # 布尔型参数用键名表示开关
 mask_num: 2

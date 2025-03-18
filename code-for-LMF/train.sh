@@ -1,5 +1,5 @@
 #!/bin/bash
-
+set -eo pipefail  # 关键配置：开启严格错误检测,只有python报错就退出
 # 创建日志目录（如果不存在）
 mkdir -p ./logs
 
