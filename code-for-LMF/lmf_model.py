@@ -249,9 +249,9 @@ def cl_forward(cls,
 
         if cls.model_args.mask_pool_type == "sum": #sum
             pooler_output = pooler_output.sum(dim=1)
-        elif model_args.mask_pool_type == "mean": #mean
+        elif cls.model_args.mask_pool_type == "mean": #mean
             pooler_output = pooler_output.mean(dim=1)
-        elif model_args.mask_pool_type == "max":
+        elif cls.model_args.mask_pool_type == "max":
             pooler_output, _ = pooler_output.max(dim=1)
         else:
             pooler_output = pooler_output[:, cls.mask_num - 1, :]
