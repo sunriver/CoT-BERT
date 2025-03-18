@@ -9,5 +9,7 @@
 /.vscode
 cache-*.arrow
 */data/
-*/data/text/*
-
+/data/text/
+*_data_text_*
+run_log_*.txt
+data/wiki1m_for_simcse.txt
