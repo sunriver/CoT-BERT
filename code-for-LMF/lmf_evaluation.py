@@ -7,6 +7,7 @@ import argparse
 import numpy as np
 from prettytable import PrettyTable
 from transformers import AutoModel, AutoTokenizer
+from  parse_args_util import load_configs
 
 # Set up logger
 logging.basicConfig(format='%(asctime)s : %(message)s', level=logging.DEBUG)
@@ -92,12 +93,12 @@ def denoising(model, template, tokenizer, device, mask_num):
 
 
 def main():
-    arg_list = ['--model_name_or_path', '../result/CoT-Bert',
-                '--mode', 'test',
-                '--mask_embedding_sentence',
-                '--mask_num', '2',
-                '--mask_embedding_sentence_template', '*cls*_The_sentence_of_"*sent_0*"_means_*mask*_,_so_it_can_be_summarized_as_*mask*_._*sep+*']  
-    
+    # arg_list = ['--model_name_or_path', '../result/CoT-Bert',
+    #             '--mode', 'test',
+    #             '--mask_embedding_sentence',
+    #             '--mask_num', '2',
+    #             '--mask_embedding_sentence_template', '*cls*_The_sentence_of_"*sent_0*"_means_*mask*_,_so_it_can_be_summarized_as_*mask*_._*sep+*']
+    #
     parser = argparse.ArgumentParser()
     parser.add_argument("--embedding_only", action='store_true')
     parser.add_argument('--mlm_head_predict', action='store_true')
@@ -130,7 +131,10 @@ def main():
     
     parser.add_argument('--calc_anisotropy', action='store_true')
 
-    args = parser.parse_args(arg_list)
+    config_custom_file = sys.argv[1] if len(sys.argv) > 1 else ''
+    args_list = load_configs(default_file="./configs/evaluation_default.yaml", custom_file=config_custom_file)
+
+    args = parser.parse_args(args_list)
 
     # Load transformers' model checkpoint
     if args.mask_embedding_sentence_org_mlp:

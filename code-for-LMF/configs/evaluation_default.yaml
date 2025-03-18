@@ -1,0 +1,5 @@
+model_name_or_path: "../result/CoT-Bert"
+mode: "test"
+mask_embedding_sentence: true  # 布尔型参数用键名表示开关
+mask_num: 2
+mask_embedding_sentence_template: '*cls*_The_sentence_of_"*sent_0*"_means_*mask*_,_so_it_can_be_summarized_as_*mask*_._*sep+*'

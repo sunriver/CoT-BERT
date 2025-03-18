@@ -1,4 +1,5 @@
 # 启动项目准备工作
+pip install --upgrade pip
 
 ## 配置https://hf-mirror.com/ 模型下载地址
 参考链接https://hf-mirror.com/
@@ -21,6 +22,10 @@ echo "# 3.167.112.25 huggingface.co
 185.199.109.133 raw.githubusercontent.com
 185.199.110.133 raw.githubusercontent.com
 185.199.111.133 raw.githubusercontent.com" >> /etc/hosts
+
+
+## 替换依赖包
+pip install numpy==1.23.5 pandas==1.5.0 datasets
 
 ## 修改train.py
     args_list = [

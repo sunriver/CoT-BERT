@@ -475,6 +475,7 @@ class OurTrainingArguments(TrainingArguments):
         return device
 
 
+from parse_args_util import load_configs
 def main():
     # See all possible arguments in src/transformers/training_args.py
     # or by passing the --help flag to this script.
@@ -484,36 +485,38 @@ def main():
     # CoT-BERT Authors: The following configuration is only applicable to CoT-BERT-base. 
     #                   If you switch to a different pre-trained language model like BERT-large, 
     #                   please remember to adjust the hyperparameters accordingly.
-    args_list = [
-        # '--model_name_or_path', 'bert-base-uncased',
-        '--model_name_or_path', '/workspace/pretrain_models/bert-base-uncased',
-        '--train_file', '../data/wiki1m_for_simcse.txt',
-        '--output_dir', '../result/CoT-LMF', 
-        '--num_train_epochs', '1', 
-        '--per_device_train_batch_size', '32', 
-        '--learning_rate', '1e-5', 
-        '--max_seq_length', '32', 
-        '--evaluation_strategy', 'steps', 
-        '--metric_for_best_model', 'stsb_spearman', 
-        '--load_best_model_at_end', 
-        '--eval_steps', '125', 
-        '--overwrite_output_dir', 
-        '--temp', '0.05', 
-        '--do_train', 
-        '--fp16', 
-        '--preprocessing_num_workers', '10', 
-        '--mlp_only_train', 
-        '--mask_embedding_sentence', 
-        '--mask_num', '2',
-        '--mask_embedding_sentence_template', '*cls*_The_sentence_of_"*sent_0*"_means_*mask*_,_so_it_can_be_summarized_as_*mask*_._*sep+*', 
-        '--mask_embedding_sentence_different_template', '*cls*_The_sentence_:_"*sent_0*"_means_*mask*_,_so_it_can_be_summarized_as_*mask*_._*sep+*',
-        '--mask_embedding_sentence_negative_template', '*cls*_The_sentence_:_"*sent_0*"_does_not_mean_*mask*_,_so_it_cannot_be_summarized_as_*mask*_._*sep+*',
-        '--mask_embedding_sentence_different_negative_template', '',
-        '--mask_embedding_sentence_delta_no_delta_eval',
-        '--mask_embedding_sentence_delta', 
-        '--dataloader_drop_last',
-        '--seed', '0']
-    
+    # args_list = [
+    #     # '--model_name_or_path', 'bert-base-uncased',
+    #     '--model_name_or_path', '/workspace/pretrain_models/bert-base-uncased',
+    #     '--train_file', '../data/wiki1m_for_simcse.txt',
+    #     '--output_dir', '../result/CoT-LMF',
+    #     '--num_train_epochs', '1',
+    #     '--per_device_train_batch_size', '32',
+    #     '--learning_rate', '1e-5',
+    #     '--max_seq_length', '32',
+    #     '--evaluation_strategy', 'steps',
+    #     '--metric_for_best_model', 'stsb_spearman',
+    #     '--load_best_model_at_end',
+    #     '--eval_steps', '125',
+    #     '--overwrite_output_dir',
+    #     '--temp', '0.05',
+    #     '--do_train',
+    #     '--fp16',
+    #     '--preprocessing_num_workers', '10',
+    #     '--mlp_only_train',
+    #     '--mask_embedding_sentence',
+    #     '--mask_num', '2',
+    #     '--mask_embedding_sentence_template', '*cls*_The_sentence_of_"*sent_0*"_means_*mask*_,_so_it_can_be_summarized_as_*mask*_._*sep+*',
+    #     '--mask_embedding_sentence_different_template', '*cls*_The_sentence_:_"*sent_0*"_means_*mask*_,_so_it_can_be_summarized_as_*mask*_._*sep+*',
+    #     '--mask_embedding_sentence_negative_template', '*cls*_The_sentence_:_"*sent_0*"_does_not_mean_*mask*_,_so_it_cannot_be_summarized_as_*mask*_._*sep+*',
+    #     '--mask_embedding_sentence_different_negative_template', '',
+    #     '--mask_embedding_sentence_delta_no_delta_eval',
+    #     '--mask_embedding_sentence_delta',
+    #     '--dataloader_drop_last',
+    #     '--seed', '0']
+
+    config_custom_file = sys.argv[1] if len(sys.argv) > 1 else ''
+    args_list = load_configs(default_file="./configs/train_default.yaml", custom_file=config_custom_file)
     model_args, data_args, training_args = parser.parse_args_into_dataclasses(args=args_list)
 
     if (
