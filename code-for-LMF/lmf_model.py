@@ -244,8 +244,17 @@ def cl_forward(cls,
         pooler_output = pooler_output.view(-1, cls.mask_num, pooler_output.shape[-1])
         # 融合所有 mask 的输出
         # pooler_output = pooler_output.sum(dim=1)
-        pooler_output, _ = pooler_output.max(dim=1)
+        # pooler_output, _ = pooler_output.max(dim=1)
         # pooler_output = pooler_output.mean(dim=1)
+
+        if cls.model_args.mask_pool_type == "sum": #sum
+            pooler_output = pooler_output.sum(dim=1)
+        elif model_args.mask_pool_type == "mean": #mean
+            pooler_output = pooler_output.mean(dim=1)
+        elif model_args.mask_pool_type == "max":
+            pooler_output, _ = pooler_output.max(dim=1)
+        else:
+            pooler_output = pooler_output[:, cls.mask_num - 1, :]
 
         # 保留最后一个maks
         # pooler_output = pooler_output[:, cls.mask_num - 1, :]

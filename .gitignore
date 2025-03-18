@@ -6,4 +6,8 @@
 /checkpoints
 /logs
 /.idea
+/.vscode
+cache-*.arrow
+*/data/
+*/data/text/*
 

@@ -335,6 +335,11 @@ class ModelArguments:
         metadata={
         }
     )
+    mask_pool_type: str = field(
+        default='default',
+        metadata={
+        }
+    )
 
 @dataclass
 class DataTrainingArguments:

@@ -1,3 +1,4 @@
+mask_pool_type: "sum" # sum, mean, max, default
 model_name_or_path: "/workspace/pretrain_models/bert-base-uncased"
 train_file: "../data/wiki1m_for_simcse.txt"
 output_dir: "../result/CoT-LMF"
