@@ -68,7 +68,7 @@ class Similarity(nn.Module):
     def forward(self, x, y):
         return self.cos(x, y) / self.temp
 
-def denoising(cls, encoder, template, type='pos-1', device='cuda', evaluation=False):
+def denoising(cls, encoder, template, type='pos-1', device='cuda', evaluation=False, mask_num=2):
     with torch.set_grad_enabled(not cls.model_args.mask_embedding_sentence_delta_freeze and not evaluation):
         if type == 'pos-1':
             bs = cls.bs
@@ -136,8 +136,8 @@ def denoising(cls, encoder, template, type='pos-1', device='cuda', evaluation=Fa
             last_hidden = outputs.last_hidden_state
             noise = last_hidden[mask]
 
-        noise = noise.view(-1, cls.mask_num, noise.shape[-1])
-        noise = noise[:, cls.mask_num - 1, :]
+        noise = noise.view(-1, mask_num, noise.shape[-1])
+        noise = noise[:, mask_num - 1, :]
 
         return noise, len(template)
 
@@ -181,16 +181,16 @@ def cl_forward(cls,
                return_dict=None,
 ):
     if cls.model_args.mask_embedding_sentence_delta:
-        noise1, template_length1 = denoising(cls=cls, encoder=encoder, template=cls.mask_embedding_template, type='pos-1', device=input_ids.device)
+        noise1, template_length1 = denoising(cls=cls, encoder=encoder, template=cls.mask_embedding_template, type='pos-1', device=input_ids.device, mask_num=cls.mask_num)
 
         if len(cls.model_args.mask_embedding_sentence_different_template) > 0:
-            noise2, template_length2 = denoising(cls=cls, encoder=encoder, template=cls.mask_embedding_template2, type='pos-2', device=input_ids.device)
+            noise2, template_length2 = denoising(cls=cls, encoder=encoder, template=cls.mask_embedding_template2, type='pos-2', device=input_ids.device, mask_num=cls.mask_num_embedding_sentence_different_template)
         
         if len(cls.model_args.mask_embedding_sentence_negative_template) > 0:
-            noise3, template_length3 = denoising(cls=cls, encoder=encoder, template=cls.mask_embedding_template3, type='neg-1', device=input_ids.device)
+            noise3, template_length3 = denoising(cls=cls, encoder=encoder, template=cls.mask_embedding_template3, type='neg-1', device=input_ids.device, mask_num=cls.mask_num)
 
         if len(cls.model_args.mask_embedding_sentence_different_negative_template) > 0:
-            noise4, template_length4 = denoising(cls=cls, encoder=encoder, template=cls.mask_embedding_template4, type='neg-2', device=input_ids.device)
+            noise4, template_length4 = denoising(cls=cls, encoder=encoder, template=cls.mask_embedding_template4, type='neg-2', device=input_ids.device, mask_num=cls.mask_num)
 
     return_dict = return_dict if return_dict is not None else cls.config.use_return_dict
     

@@ -340,6 +340,11 @@ class ModelArguments:
         metadata={
         }
     )
+    mask_num_embedding_sentence_different_template: int = field(
+        default=3,
+        metadata={
+        }
+    )
 
 @dataclass
 class DataTrainingArguments:
@@ -665,6 +670,7 @@ def main():
 
     if model_args.mask_embedding_sentence:
         model.mask_num = model_args.mask_num
+        model.mask_num_embedding_sentence_different_template = model_args.mask_num_embedding_sentence_different_template
 
         if model_args.mask_embedding_sentence_template != '': 
             template = model_args.mask_embedding_sentence_template

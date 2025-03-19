@@ -17,10 +17,12 @@ fp16: true
 preprocessing_num_workers: 10
 mlp_only_train: true
 mask_embedding_sentence: true
-mask_num: 2
-mask_embedding_sentence_template: '*cls*_The_sentence_of_"*sent_0*"_means_*mask*_,_so_it_can_be_summarized_as_*mask*_._*sep+*'
-mask_embedding_sentence_different_template: '*cls*_The_sentence_:_"*sent_0*"_means_*mask*_,_so_it_can_be_summarized_as_*mask*_._*sep+*'
-mask_embedding_sentence_negative_template: '*cls*_The_sentence_:_"*sent_0*"_does_not_mean_*mask*_,_so_it_cannot_be_summarized_as_*mask*_._*sep+*'
+mask_num: 3
+mask_num_embedding_sentence_different_template: 3
+mask_embedding_sentence_template: '*cls*_The_sentence_of_"*sent_0*"_means_*mask*_and_*mask*,_so_it_can_be_summarized_as_*mask*_._*sep+*'
+mask_embedding_sentence_different_template: '*cls*_The_sentence_of_"*sent_0*"_means_*mask*_,_does_not_mean_*mask*_,_so_it_can_be_summarized_as_*mask*_._*sep+*'
+# mask_embedding_sentence_different_template: '*cls*_The_sentence_:_"*sent_0*"_means_*mask*_,_so_it_can_be_summarized_as_*mask*_._*sep+*'
+mask_embedding_sentence_negative_template: '*cls*_The_sentence_:_"*sent_0*"_does_not_mean_*mask*_and_*mask*_,_so_it_cannot_be_summarized_as_*mask*_._*sep+*'
 mask_embedding_sentence_different_negative_template: ''
 mask_embedding_sentence_delta_no_delta_eval: true
 mask_embedding_sentence_delta: true
