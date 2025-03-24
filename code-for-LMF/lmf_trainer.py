@@ -49,6 +49,7 @@ if version.parse(torch.__version__) >= version.parse("1.6"):
     from torch.cuda.amp import autocast
 
 from transformers.trainer import _model_unwrap
+from token_util import prepare_eval_features
 
 # Set path to SentEval
 PATH_TO_SENTEVAL = '../SentEval'
@@ -75,21 +76,43 @@ class CLTrainer(Trainer):
         def prepare(params, samples):
             return
 
-        def batcher(params, batch):
-            sentences = [' '.join(s) for s in batch]
+        def batcher(params, examples):
+            sentences = [' '.join(s) for s in examples]
 
-            batch = self.tokenizer.batch_encode_plus(
-                sentences,
-                return_tensors='pt',
+            # batch = self.tokenizer.batch_encode_plus(
+            #     sentences,
+            #     return_tensors='pt',
+            #     padding=True,
+            # )
+
+            # for k in batch:
+            #     batch[k] = batch[k].to(self.args.device)
+
+            special_keys = ['input_ids', 'attention_mask', 'token_type_ids']
+            num_sent = 1
+
+            features = prepare_eval_features(self.tokenizer, sentences)
+            input_ids = features['input_ids']
+            bs = len(input_ids)
+            
+            sent_positions = features['sent_positions']
+            length = len(input_ids)
+            max_length = max([len(input_id[0]) for input_id in input_ids])
+
+            flat_features = [{'input_ids': input_ids[i][0], 'sent_positions': sent_positions[i]} for i in range(length)]
+
+            batch = self.tokenizer.pad(
+                flat_features,
                 padding=True,
-            )
+                max_length=max_length,
+                return_tensors="pt",
+            ).to(self.args.device)
 
-            for k in batch:
-                batch[k] = batch[k].to(self.args.device)
+            batch = {k: batch[k].view(bs, num_sent, -1) if k in special_keys else batch[k].view(bs, num_sent, -1)[:, 0] for k in batch}
 
             with torch.no_grad():
-                outputs = self.model(**batch, output_hidden_states=True, return_dict=True, sent_emb=True)
-                pooler_output = outputs.pooler_output
+                pooler_output = self.model(**batch, output_hidden_states=True, return_dict=True, sent_emb=True)
+                # pooler_output = outputs.pooler_output
 
             return pooler_output.cpu()
 

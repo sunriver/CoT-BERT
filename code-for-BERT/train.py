@@ -485,11 +485,11 @@ def main():
     #                   If you switch to a different pre-trained language model like BERT-large, 
     #                   please remember to adjust the hyperparameters accordingly.
     args_list = [
-        '--model_name_or_path', 'bert-base-uncased',
+        '--model_name_or_path', '/workspace/pretrain_models/bert-base-uncased',
         '--train_file', '../data/wiki1m_for_simcse.txt',
         '--output_dir', '../result/CoT-Bert', 
         '--num_train_epochs', '1', 
-        '--per_device_train_batch_size', '128', 
+        '--per_device_train_batch_size', '4', 
         '--learning_rate', '1e-5', 
         '--max_seq_length', '32', 
         '--evaluation_strategy', 'steps', 

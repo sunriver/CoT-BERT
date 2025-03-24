@@ -20,7 +20,7 @@ from transformers import (
 )
 
 from lmf_trainer import CLTrainer
-from lmf_model import RobertaForCL, BertForCL
+from lmf_model import BertForCL
 from transformers.trainer_utils import is_main_process
 from transformers.tokenization_utils_base import PaddingStrategy, PreTrainedTokenizerBase
 from transformers.file_utils import cached_property, torch_required, is_torch_tpu_available
@@ -486,44 +486,13 @@ class OurTrainingArguments(TrainingArguments):
 
 
 from parse_args_util import load_configs
+from token_util import prepare_train_features
 def main():
     # See all possible arguments in src/transformers/training_args.py
     # or by passing the --help flag to this script.
     # We now keep distinct sets of args, for a cleaner separation of concerns.
     parser = HfArgumentParser((ModelArguments, DataTrainingArguments, OurTrainingArguments))
 
-    # CoT-BERT Authors: The following configuration is only applicable to CoT-BERT-base. 
-    #                   If you switch to a different pre-trained language model like BERT-large, 
-    #                   please remember to adjust the hyperparameters accordingly.
-    # args_list = [
-    #     # '--model_name_or_path', 'bert-base-uncased',
-    #     '--model_name_or_path', '/workspace/pretrain_models/bert-base-uncased',
-    #     '--train_file', '../data/wiki1m_for_simcse.txt',
-    #     '--output_dir', '../result/CoT-LMF',
-    #     '--num_train_epochs', '1',
-    #     '--per_device_train_batch_size', '32',
-    #     '--learning_rate', '1e-5',
-    #     '--max_seq_length', '32',
-    #     '--evaluation_strategy', 'steps',
-    #     '--metric_for_best_model', 'stsb_spearman',
-    #     '--load_best_model_at_end',
-    #     '--eval_steps', '125',
-    #     '--overwrite_output_dir',
-    #     '--temp', '0.05',
-    #     '--do_train',
-    #     '--fp16',
-    #     '--preprocessing_num_workers', '10',
-    #     '--mlp_only_train',
-    #     '--mask_embedding_sentence',
-    #     '--mask_num', '2',
-    #     '--mask_embedding_sentence_template', '*cls*_The_sentence_of_"*sent_0*"_means_*mask*_,_so_it_can_be_summarized_as_*mask*_._*sep+*',
-    #     '--mask_embedding_sentence_different_template', '*cls*_The_sentence_:_"*sent_0*"_means_*mask*_,_so_it_can_be_summarized_as_*mask*_._*sep+*',
-    #     '--mask_embedding_sentence_negative_template', '*cls*_The_sentence_:_"*sent_0*"_does_not_mean_*mask*_,_so_it_cannot_be_summarized_as_*mask*_._*sep+*',
-    #     '--mask_embedding_sentence_different_negative_template', '',
-    #     '--mask_embedding_sentence_delta_no_delta_eval',
-    #     '--mask_embedding_sentence_delta',
-    #     '--dataloader_drop_last',
-    #     '--seed', '0']
 
     config_custom_file = sys.argv[1] if len(sys.argv) > 1 else ''
     args_list = load_configs(default_file="./configs/train_default.yaml", custom_file=config_custom_file)
@@ -614,15 +583,16 @@ def main():
 
     if model_args.model_name_or_path:
         if 'roberta' in model_args.model_name_or_path:
-            model = RobertaForCL.from_pretrained(
-                model_args.model_name_or_path,
-                from_tf=".ckpt" in model_args.model_name_or_path,
-                config=config,
-                cache_dir=model_args.cache_dir,
-                revision=model_args.model_revision,
-                use_auth_token=True if model_args.use_auth_token else None,
-                model_args=model_args,
-            )
+            pass
+            # model = RobertaForCL.from_pretrained(
+            #     model_args.model_name_or_path,
+            #     from_tf=".ckpt" in model_args.model_name_or_path,
+            #     config=config,
+            #     cache_dir=model_args.cache_dir,
+            #     revision=model_args.model_revision,
+            #     use_auth_token=True if model_args.use_auth_token else None,
+            #     model_args=model_args,
+            # )
         elif 'bert' in model_args.model_name_or_path:
             model = BertForCL.from_pretrained(
                 model_args.model_name_or_path,
@@ -668,178 +638,15 @@ def main():
     else:
         raise NotImplementedError
 
-    if model_args.mask_embedding_sentence:
-        model.mask_num = model_args.mask_num
-        model.mask_num_embedding_sentence_different_template = model_args.mask_num_embedding_sentence_different_template
 
-        if model_args.mask_embedding_sentence_template != '': 
-            template = model_args.mask_embedding_sentence_template
-            assert ' ' not in template
-
-            template = template.replace('*mask*', tokenizer.mask_token)\
-                               .replace('*sep+*', '').replace('*cls*', '').replace('*sent_0*', ' ')
-           
-            template = template.split(' ')
-            
-            model_args.mask_embedding_sentence_bs = template[0].replace('_', ' ')
-            
-            if 'roberta' in model_args.model_name_or_path:
-                model_args.mask_embedding_sentence_bs = model_args.mask_embedding_sentence_bs.strip()
-            
-            model_args.mask_embedding_sentence_es = template[1].replace('_', ' ')
-
-        if model_args.mask_embedding_sentence_different_template != '':
-            template = model_args.mask_embedding_sentence_different_template
-            assert ' ' not in template
-
-            template = template.replace('*mask*', tokenizer.mask_token)\
-                               .replace('*sep+*', '').replace('*cls*', '').replace('*sent_0*', ' ')
-            
-            template = template.split(' ')
-            model_args.mask_embedding_sentence_bs2 = template[0].replace('_', ' ')
-
-            if 'roberta' in model_args.model_name_or_path:
-                model_args.mask_embedding_sentence_bs2 = model_args.mask_embedding_sentence_bs2.strip()
-                
-            model_args.mask_embedding_sentence_es2 = template[1].replace('_', ' ')
-        
-        # CoT-BERT Authors: add hard negative instance for unsupervised learning
-        if model_args.mask_embedding_sentence_negative_template != '':
-            template = model_args.mask_embedding_sentence_negative_template
-            assert ' ' not in template
-
-            template = template.replace('*mask*', tokenizer.mask_token)\
-                               .replace('*sep+*', '').replace('*cls*', '').replace('*sent_0*', ' ')
-            
-            template = template.split(' ')
-            model_args.mask_embedding_sentence_bs3 = template[0].replace('_', ' ')
-
-            if 'roberta' in model_args.model_name_or_path:
-                model_args.mask_embedding_sentence_bs3 = model_args.mask_embedding_sentence_bs3.strip()
-                
-            model_args.mask_embedding_sentence_es3 = template[1].replace('_', ' ')
-        
-        # CoT-BERT Authors: add hard negative instance2 for unsupervised learning
-        #                   Our paper did not use this option
-        if model_args.mask_embedding_sentence_different_negative_template != '':
-            template = model_args.mask_embedding_sentence_different_negative_template
-            assert ' ' not in template
-
-            template = template.replace('*mask*', tokenizer.mask_token)\
-                               .replace('*sep+*', '').replace('*cls*', '').replace('*sent_0*', ' ')
-            
-            template = template.split(' ')
-            model_args.mask_embedding_sentence_bs4 = template[0].replace('_', ' ')
-
-            if 'roberta' in model_args.model_name_or_path:
-                model_args.mask_embedding_sentence_bs4 = model_args.mask_embedding_sentence_bs4.strip()
-            
-            model_args.mask_embedding_sentence_es4 = template[1].replace('_', ' ')
-
-    def prepare_features(examples):
-        # padding = longest (default)
-        #   If no sentence in the batch exceed the max length, then use
-        #   the max sentence length in the batch, otherwise use the 
-        #   max sentence length in the argument and truncate those that
-        #   exceed the max length.
-
-        # padding = max_length (when pad_to_max_length, for pressure test)
-        #   All sentences are padded/truncated to data_args.max_seq_length.
-        total = len(examples[sent0_cname])
-
-        # Avoid "None" fields
-        for idx in range(total):
-            if examples[sent0_cname][idx] is None:
-                examples[sent0_cname][idx] = " "
-            if examples[sent1_cname][idx] is None:
-                examples[sent1_cname][idx] = " "
-
-        sentences = examples[sent0_cname] + examples[sent1_cname]
-
-        # If hard negative exists
-        if sent2_cname is not None:
-            for idx in range(total):
-                if examples[sent2_cname][idx] is None:
-                    examples[sent2_cname][idx] = " "
-            sentences += examples[sent2_cname]
-        
-        if len(model_args.mask_embedding_sentence_negative_template) > 0:
-            sentences += examples[sent0_cname]
-
-        if len(model_args.mask_embedding_sentence_different_negative_template) > 0:
-            sentences += examples[sent0_cname]
-
-        if model_args.mask_embedding_sentence:
-            bs = tokenizer.encode(model_args.mask_embedding_sentence_bs)[:-1]
-            es = tokenizer.encode(model_args.mask_embedding_sentence_es)[1:]
-
-            if len(model_args.mask_embedding_sentence_different_template) > 0:
-                bs2 = tokenizer.encode(model_args.mask_embedding_sentence_bs2)[:-1]
-                es2 = tokenizer.encode(model_args.mask_embedding_sentence_es2)[1:]
-            else:
-                bs2, es2 = bs, es
-            
-            if len(model_args.mask_embedding_sentence_negative_template) > 0:
-                bs3 = tokenizer.encode(model_args.mask_embedding_sentence_bs3)[:-1]
-                es3 = tokenizer.encode(model_args.mask_embedding_sentence_es3)[1:]
-            
-            if len(model_args.mask_embedding_sentence_different_negative_template) > 0:
-                bs4 = tokenizer.encode(model_args.mask_embedding_sentence_bs4)[:-1]
-                es4 = tokenizer.encode(model_args.mask_embedding_sentence_es4)[1:]
-
-            sent_features = {'input_ids': [], 'attention_mask': []}
-
-            for i, s in enumerate(sentences):
-                if i < total:
-                    s = tokenizer.encode(s, add_special_tokens=False)[:data_args.max_seq_length]
-                    sent_features['input_ids'].append(bs + s + es)
-                elif i < 2 * total:
-                    s = tokenizer.encode(s, add_special_tokens=False)[:data_args.max_seq_length]
-                    sent_features['input_ids'].append(bs2 + s + es2)
-                elif i < 3 * total:
-                    s = tokenizer.encode(s, add_special_tokens=False)[:data_args.max_seq_length]
-                    sent_features['input_ids'].append(bs3 + s + es3)
-                else:
-                    s = tokenizer.encode(s, add_special_tokens=False)[:data_args.max_seq_length]
-                    sent_features['input_ids'].append(bs4 + s + es4)
-            
-            ml = max(len(i) for i in sent_features['input_ids'])
-
-            for i in range(len(sent_features['input_ids'])):
-                t = sent_features['input_ids'][i]
-                sent_features['input_ids'][i] = t + [tokenizer.pad_token_id] * (ml - len(t))
-                sent_features['attention_mask'].append(len(t) * [1] + (ml - len(t)) * [0])
-        else:
-            sent_features = tokenizer(
-                sentences,
-                max_length=data_args.max_seq_length,
-                truncation=True,
-                padding="max_length" if data_args.pad_to_max_length else False,
-            )
-
-        features = {}
-        # CoT-BERT Authors: add judgement for unsupervised negative instance
-        if sent2_cname is not None or (
-            len(model_args.mask_embedding_sentence_negative_template) > 0 and len(model_args.mask_embedding_sentence_different_negative_template) == 0
-        ):
-            
-            for key in sent_features:
-                features[key] = [[sent_features[key][i], sent_features[key][i + total], sent_features[key][i + total * 2]] for i in range(total)]
-
-        elif len(model_args.mask_embedding_sentence_negative_template) > 0 and len(model_args.mask_embedding_sentence_different_negative_template) > 0:
-            
-            for key in sent_features:
-                features[key] = [[sent_features[key][i], sent_features[key][i + total], sent_features[key][i + total * 2], sent_features[key][i + total * 3]] for i in range(total)]
-
-        else:
-            for key in sent_features:
-                features[key] = [[sent_features[key][i], sent_features[key][i + total]] for i in range(total)]
-
-        return features
+    def prepare_features2(examples):
+        sentences = examples[sent0_cname]
+        return prepare_train_features(tokenizer, sentences)
+   
 
     if training_args.do_train:
         train_dataset = datasets["train"].map(
-            prepare_features,
+            prepare_features2,
             batched=True,
             num_proc=data_args.preprocessing_num_workers,
             remove_columns=column_names,
@@ -857,7 +664,7 @@ def main():
         mlm_probability: float = data_args.mlm_probability
 
         def __call__(self, features: List[Dict[str, Union[List[int], List[List[int]], torch.Tensor]]]) -> Dict[str, torch.Tensor]:
-            special_keys = ['input_ids', 'attention_mask', 'token_type_ids']
+            special_keys = ['input_ids', 'attention_mask', 'token_type_ids', 'sent_positions']
             bs = len(features)
 
             if bs > 0:
@@ -880,6 +687,7 @@ def main():
 
             batch = {k: batch[k].view(bs, num_sent, -1) if k in special_keys else batch[k].view(bs, num_sent, -1)[:, 0] for k in batch}
 
+            
             if "label" in batch:
                 batch["labels"] = batch["label"]
                 del batch["label"]
@@ -889,65 +697,11 @@ def main():
 
             return batch
         
+    model.pad_token_id = tokenizer.pad_token_id
+    model.mask_token_id = tokenizer.mask_token_id
+    
     data_collator = default_data_collator if data_args.pad_to_max_length else OurDataCollatorWithPadding(tokenizer)
 
-    if model_args.mask_embedding_sentence:
-        model.pad_token_id = tokenizer.pad_token_id
-        model.mask_token_id = tokenizer.mask_token_id
-
-        model.bos = tokenizer.encode('')[0]
-        model.eos = tokenizer.encode('')[1]
-
-        model.bs = tokenizer.encode(model_args.mask_embedding_sentence_bs, add_special_tokens=False)
-        model.es = tokenizer.encode(model_args.mask_embedding_sentence_es, add_special_tokens=False)
-        model.mask_embedding_template = tokenizer.encode(model_args.mask_embedding_sentence_bs + model_args.mask_embedding_sentence_es)
-
-        assert len(model.mask_embedding_template) == len(model.bs) + len(model.es) + 2
-        assert model.mask_embedding_template[1 : -1] == model.bs + model.es
-
-        if len(model_args.mask_embedding_sentence_different_template) > 0:
-            model.bs2 = tokenizer.encode(model_args.mask_embedding_sentence_bs2, add_special_tokens=False)
-            model.es2 = tokenizer.encode(model_args.mask_embedding_sentence_es2, add_special_tokens=False)
-            model.mask_embedding_template2 = tokenizer.encode(model_args.mask_embedding_sentence_bs2 + model_args.mask_embedding_sentence_es2)
-        
-        if len(model_args.mask_embedding_sentence_negative_template) > 0:
-            model.bs3 = tokenizer.encode(model_args.mask_embedding_sentence_bs3, add_special_tokens=False)
-            model.es3 = tokenizer.encode(model_args.mask_embedding_sentence_es3, add_special_tokens=False)
-            model.mask_embedding_template3 = tokenizer.encode(model_args.mask_embedding_sentence_bs3 + model_args.mask_embedding_sentence_es3)
-        
-        if len(model_args.mask_embedding_sentence_different_negative_template) > 0:
-            model.bs4 = tokenizer.encode(model_args.mask_embedding_sentence_bs4, add_special_tokens=False)
-            model.es4 = tokenizer.encode(model_args.mask_embedding_sentence_es4, add_special_tokens=False)
-            model.mask_embedding_template4 = tokenizer.encode(model_args.mask_embedding_sentence_bs4 + model_args.mask_embedding_sentence_es4)
-
-        # CoT-BERT Authors: Since we haven't made any modifications related to the auto-prompt, 
-        #                   there's a high probability that the following code may not function correctly.
-        if model_args.mask_embedding_sentence_autoprompt:
-            mask_index = model.mask_embedding_template.index(tokenizer.mask_token_id)
-            index_mbv = model.mask_embedding_template[1:mask_index] + model.mask_embedding_template[mask_index+1:-1]
-
-            model.dict_mbv = index_mbv
-            model.fl_mbv = [i <= 3 for i, _ in enumerate(index_mbv)]
-
-            if len(model_args.mask_embedding_sentence_autoprompt_continue_training) > 0:
-                state_dict = torch.load(
-                    f'{model_args.mask_embedding_sentence_autoprompt_continue_training}/pytorch_model.bin'
-                )
-                p_mbv_w = state_dict['p_mbv']
-                mlp_state_dict = {}
-                for i in state_dict:
-                    if 'mlp' == i[:3]:
-                        mlp_state_dict[i[4:]] = state_dict[i]
-                model.mlp.load_state_dict(mlp_state_dict)
-            else:
-                p_mbv_w = model.bert.embeddings.word_embeddings.weight[model.dict_mbv].clone()
-
-            model.register_parameter(name='p_mbv', param=torch.nn.Parameter(p_mbv_w))
-            if model_args.mask_embedding_sentence_autoprompt_freeze_prompt:
-                model.p_mbv.requires_grad = False
-
-            if model_args.mask_embedding_sentence_autoprompt_random_init:
-                model.p_mbv.data.normal_(mean=0.0, std=0.02)
 
     trainer = CLTrainer(
         model=model,
