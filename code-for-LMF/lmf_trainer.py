@@ -111,8 +111,8 @@ class CLTrainer(Trainer):
             batch = {k: batch[k].view(bs, num_sent, -1) if k in special_keys else batch[k].view(bs, num_sent, -1)[:, 0] for k in batch}
 
             with torch.no_grad():
-                pooler_output = self.model(**batch, output_hidden_states=True, return_dict=True, sent_emb=True)
-                # pooler_output = outputs.pooler_output
+                outputs = self.model(**batch, output_hidden_states=True, return_dict=True, sent_emb=True)
+                pooler_output = outputs.pooler_output
 
             return pooler_output.cpu()
 

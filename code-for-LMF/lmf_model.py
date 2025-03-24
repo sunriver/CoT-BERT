@@ -170,14 +170,25 @@ def cl_forward(cls,
     if sent_emb:
         pos_mask_output_pooler = denoised_mask_outputs[:,0,:,:].squeeze(1) 
         pos_mask_output_pooler = pos_mask_output_pooler.mean(dim = 1)
-        return pos_mask_output_pooler
+
+        return BaseModelOutputWithPoolingAndCrossAttentions(
+            pooler_output=pos_mask_output_pooler,
+            last_hidden_state=outputs.last_hidden_state,
+            hidden_states=outputs.hidden_states,
+        )
+        # return pos_mask_output_pooler
 
     # outputs = denoised_mask_outputs[:, 0].mean(dim=1)  # (batch_size, hidden_size)  
 
+    # pos_mask1_vec = denoised_mask_outputs[:, 0, 0]
+    # pos_mask2_vec = denoised_mask_outputs[:, 0, 1]
+    # neg_mask1_vec = denoised_mask_outputs[:, 1, 0]
+    # neg_mask2_vec = denoised_mask_outputs[:, 1, 1]
+
     pos_mask1_vec = denoised_mask_outputs[:, 0, 0]
-    pos_mask2_vec = denoised_mask_outputs[:, 0, 1]
-    neg_mask1_vec = denoised_mask_outputs[:, 1, 0]
-    neg_mask2_vec = denoised_mask_outputs[:, 1, 1]
+    pos_mask2_vec = denoised_mask_outputs[:, 1, 1]
+    neg_mask1_vec = denoised_mask_outputs[:, 0, 1]
+    neg_mask2_vec = denoised_mask_outputs[:, 1, 0]
 
 
 
