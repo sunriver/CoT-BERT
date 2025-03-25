@@ -180,15 +180,15 @@ def cl_forward(cls,
 
     # outputs = denoised_mask_outputs[:, 0].mean(dim=1)  # (batch_size, hidden_size)  
 
-    # pos_mask1_vec = denoised_mask_outputs[:, 0, 0]
-    # pos_mask2_vec = denoised_mask_outputs[:, 0, 1]
-    # neg_mask1_vec = denoised_mask_outputs[:, 1, 0]
-    # neg_mask2_vec = denoised_mask_outputs[:, 1, 1]
-
     pos_mask1_vec = denoised_mask_outputs[:, 0, 0]
-    pos_mask2_vec = denoised_mask_outputs[:, 1, 1]
-    neg_mask1_vec = denoised_mask_outputs[:, 0, 1]
-    neg_mask2_vec = denoised_mask_outputs[:, 1, 0]
+    pos_mask2_vec = denoised_mask_outputs[:, 0, 1]
+    neg_mask1_vec = denoised_mask_outputs[:, 1, 0]
+    neg_mask2_vec = denoised_mask_outputs[:, 1, 1]
+
+    # pos_mask1_vec = denoised_mask_outputs[:, 0, 0]
+    # pos_mask2_vec = denoised_mask_outputs[:, 1, 1]
+    # neg_mask1_vec = denoised_mask_outputs[:, 0, 1]
+    # neg_mask2_vec = denoised_mask_outputs[:, 1, 0]
 
 
 
