@@ -169,7 +169,9 @@ def cl_forward(cls,
     denoised_mask_outputs = denoised_mask_outputs.view((batch_size, num_sent, -1, denoised_mask_outputs.size(-1))) # (batch_size, num_sent, mask_num, hidden_size)
     if sent_emb:
         pos_mask_output_pooler = denoised_mask_outputs[:,0,:,:].squeeze(1) 
-        pos_mask_output_pooler = pos_mask_output_pooler.mean(dim = 1)
+        # pos_mask_output_pooler, _ = pos_mask_output_pooler.max(dim = 1)
+        # pos_mask_output_pooler= pos_mask_output_pooler.sum(dim = 1)
+        pos_mask_output_pooler= pos_mask_output_pooler.mean(dim = 1)
 
         return BaseModelOutputWithPoolingAndCrossAttentions(
             pooler_output=pos_mask_output_pooler,
@@ -197,8 +199,7 @@ def cl_forward(cls,
         (pos_mask1_vec, neg_mask1_vec),
         (pos_mask1_vec, neg_mask2_vec),
         (pos_mask2_vec, neg_mask1_vec),
-        (pos_mask2_vec, neg_mask2_vec),
-        (neg_mask1_vec, neg_mask2_vec)
+        (pos_mask2_vec, neg_mask2_vec)
     ]
     # 计算正样本对的相似度（余弦相似度）
     pos_similarities = [cls.sim(vec1.unsqueeze(1), vec2.unsqueeze(0)) for vec1, vec2 in pos_pairs]  # 每个元素形状 (batch_size,)
