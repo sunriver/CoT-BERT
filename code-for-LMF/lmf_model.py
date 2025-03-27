@@ -36,10 +36,6 @@ class MaskWeightLayer(nn.Module):
         
 
 
-def wrap_compute_weight_mask(cls, pool_output):
-    output = cls.layer_mask_weight(pool_output)
-    return output
-
 
 
 class MLPLayer(nn.Module):
@@ -79,28 +75,19 @@ def cl_init(cls, config):
         cls.mlp = BertPredictionHeadTransform(config)
     else:
         cls.mlp = MLPLayer(config, scale=cls.model_args.mask_embedding_sentence_num_masks)
-    
-     # 定义动态可学习的权重参数（形状为 [mask_num]）
-    # cls.weights_mask = nn.Parameter(torch.ones(cls.model_args.mask_num, dtype=torch.float32))
-    # cls.weights_mask.uniform_(0, 1)  # 可选：随机初始化权重
 
-    weights_mask = torch.Tensor(cls.model_args.mask_num).uniform_(0, 1)
-    # 步骤 2: 替换原 weights_mask（需确保它是 nn.Parameter）
-    cls.weights_mask = weights_mask
+    cls.sim = Similarity(temp = cls.model_args.temp)
+       
 
-    cls.sim = Similarity(temp=cls.model_args.temp)
-
-    cls.layer_mask_weight = MaskWeightLayer(config)
     cls.init_weights()
 
 
-def get_noise_inputs(cls, orig_input_ids, orig_attention_mask, sent_positions, device='cuda',
-                     evaluation=False):
+def get_noise_inputs(orig_input_ids, orig_attention_mask, sent_positions, device='cuda',  pad_token_id = 0):
     """将原始输入中的句子部分替换为PAD"""
     noise_input_ids = orig_input_ids.clone()
     noise_attention_mask = orig_attention_mask.clone()
     for i, (start, end) in enumerate(sent_positions):
-        noise_input_ids[i, start:end] = cls.pad_token_id
+        noise_input_ids[i, start:end] = pad_token_id
         noise_attention_mask[i, start:end] = 0
 
     noise_input_ids = torch.Tensor(noise_input_ids).to(device).long()
@@ -109,7 +96,7 @@ def get_noise_inputs(cls, orig_input_ids, orig_attention_mask, sent_positions, d
 
 
 
-def cl_get_mask_outputs(cls, encoder, input_ids, attention_mask):
+def cl_get_mask_outputs(encoder, input_ids, attention_mask, mask_token_id):
     # batch_size = input_ids.size(0)
     # num_sent = input_ids.size(1)
 
@@ -123,7 +110,7 @@ def cl_get_mask_outputs(cls, encoder, input_ids, attention_mask):
         output_hidden_states=False,
         return_dict=True,
     )
-    mask = input_ids == cls.mask_token_id
+    mask = input_ids == mask_token_id
     mask_num = mask[0].sum().item()
 
     last_hidden = outputs.last_hidden_state
@@ -132,6 +119,35 @@ def cl_get_mask_outputs(cls, encoder, input_ids, attention_mask):
     mask_outputs = mask_outputs.view((-1, mask_num, mask_outputs.size(-1)))  # (batch_size * num_sent, mask_num, hidden_size)
     return outputs, mask_outputs
 
+
+def evaluate(encoder, input_ids, attention_mask, sent_positions, mask_token_id, pad_token_id):
+    batch_size = input_ids.size(0)
+    num_sent = input_ids.size(1)
+       # Flatten input for encoding
+    input_ids = input_ids.view((-1, input_ids.size(-1)))  # (batch_size * num_sent, len)
+    attention_mask = attention_mask.view((-1, attention_mask.size(-1)))  # (batch_size * num_sent, len)
+    sent_positions = sent_positions.view((-1, sent_positions.size(-1)))  # (batch_size * num_sent, len)
+
+    outputs, mask_outputs = cl_get_mask_outputs(encoder, input_ids, attention_mask, mask_token_id) # (batch_size * num_sent, mask_num, hidden_size)
+
+    noise_input_ids, noise_attention_mask = get_noise_inputs(input_ids, attention_mask, sent_positions, pad_token_id)
+
+    outputs, noise_mask_outputs = cl_get_mask_outputs(encoder, noise_input_ids, noise_attention_mask, mask_token_id) # (batch_size * num_sent, mask_num, hidden_size)
+
+    denoised_mask_outputs = mask_outputs - noise_mask_outputs
+
+    denoised_mask_outputs = denoised_mask_outputs.view((batch_size, num_sent, -1, denoised_mask_outputs.size(-1))) # (batch_size, num_sent, mask_num, hidden_size)
+    
+    pos_mask_output_pooler = denoised_mask_outputs[:,0,:,:].squeeze(1) 
+    # pos_mask_output_pooler, _ = pos_mask_output_pooler.max(dim = 1)
+    # pos_mask_output_pooler= pos_mask_output_pooler.sum(dim = 1)
+    pos_mask_output_pooler= pos_mask_output_pooler.mean(dim = 1)
+
+    return BaseModelOutputWithPoolingAndCrossAttentions(
+            pooler_output=pos_mask_output_pooler,
+            last_hidden_state=outputs.last_hidden_state,
+            hidden_states=outputs.hidden_states,
+    )
 
 def cl_forward(cls,
                encoder,
@@ -152,17 +168,19 @@ def cl_forward(cls,
 
     batch_size = input_ids.size(0)
     num_sent = input_ids.size(1)
+    pad_token_id = cls.pad_token_id
+    mask_token_id = cls.mask_token_id
 
     # Flatten input for encoding
     input_ids = input_ids.view((-1, input_ids.size(-1)))  # (batch_size * num_sent, len)
     attention_mask = attention_mask.view((-1, attention_mask.size(-1)))  # (batch_size * num_sent, len)
     sent_positions = sent_positions.view((-1, sent_positions.size(-1)))  # (batch_size * num_sent, len)
 
-    outputs, mask_outputs = cl_get_mask_outputs(cls, encoder, input_ids, attention_mask) # (batch_size * num_sent, mask_num, hidden_size)
+    outputs, mask_outputs = cl_get_mask_outputs(encoder, input_ids, attention_mask, mask_token_id=mask_token_id) # (batch_size * num_sent, mask_num, hidden_size)
 
-    noise_input_ids, noise_attention_mask = get_noise_inputs(cls, input_ids, attention_mask, sent_positions)
+    noise_input_ids, noise_attention_mask = get_noise_inputs(input_ids, attention_mask, sent_positions, pad_token_id=pad_token_id)
 
-    outputs, noise_mask_outputs = cl_get_mask_outputs(cls, encoder, noise_input_ids, noise_attention_mask) # (batch_size * num_sent, mask_num, hidden_size)
+    outputs, noise_mask_outputs = cl_get_mask_outputs(encoder, noise_input_ids, noise_attention_mask, mask_token_id=mask_token_id) # (batch_size * num_sent, mask_num, hidden_size)
 
     denoised_mask_outputs = mask_outputs - noise_mask_outputs
 
@@ -230,12 +248,16 @@ def cl_forward(cls,
 class BertForCL(BertPreTrainedModel):
     _keys_to_ignore_on_load_missing = [r"position_ids"]
 
+  
+
     def __init__(self, config, *model_args, **model_kargs):
         super().__init__(config)
         self.model_args = model_kargs["model_args"]
         self.bert = BertModel(config)
         self.total_length = 80
         cl_init(self, config)
+    
+
 
     def forward(self,
         input_ids=None,
