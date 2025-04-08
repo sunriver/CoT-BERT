@@ -88,19 +88,26 @@ class CLTrainer(Trainer):
             # for k in batch:
             #     batch[k] = batch[k].to(self.args.device)
 
-            special_keys = ['input_ids', 'attention_mask', 'token_type_ids']
-            num_sent = 1
+            special_keys = ['input_ids', 'attention_mask', 'token_type_ids', 'sent_positions']
+            
 
             features = prepare_eval_features(self.tokenizer, sentences)
             input_ids = features['input_ids']
+
             bs = len(input_ids)
-            
+            num_sent = len(input_ids[0])
+
+            flat_features = []
+            max_length = 0
             sent_positions = features['sent_positions']
-            length = len(input_ids)
-            max_length = max([len(input_id[0]) for input_id in input_ids])
-
-            flat_features = [{'input_ids': input_ids[i][0], 'sent_positions': sent_positions[i]} for i in range(length)]
-
+            for bs_i in range(bs):
+                for sent_i in range(num_sent):
+                    ids = input_ids[bs_i][sent_i]
+                    flat_features.append({'input_ids': ids, 'sent_positions': sent_positions[bs_i][sent_i]})
+                    length = len(ids)
+                    if length > max_length:
+                        max_length = length
+            
             batch = self.tokenizer.pad(
                 flat_features,
                 padding=True,

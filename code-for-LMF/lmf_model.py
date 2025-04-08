@@ -88,7 +88,7 @@ def get_noise_inputs(orig_input_ids, orig_attention_mask, sent_positions, device
     noise_attention_mask = orig_attention_mask.clone()
     for i, (start, end) in enumerate(sent_positions):
         noise_input_ids[i, start:end] = pad_token_id
-        noise_attention_mask[i, start:end] = 0
+        # noise_attention_mask[i, start:end] = 0
 
     noise_input_ids = torch.Tensor(noise_input_ids).to(device).long()
     noise_attention_mask = torch.Tensor(noise_attention_mask).to(device).long()
@@ -119,6 +119,50 @@ def cl_get_mask_outputs(encoder, input_ids, attention_mask, mask_token_id):
     mask_outputs = mask_outputs.view((-1, mask_num, mask_outputs.size(-1)))  # (batch_size * num_sent, mask_num, hidden_size)
     return outputs, mask_outputs
 
+def get_pos_neg_pairs0(denoised_mask_outputs):
+    pos_mask1_vec = denoised_mask_outputs[:, 0, 0]
+    pos_mask2_vec = denoised_mask_outputs[:, 0, 1]
+    neg_mask1_vec = denoised_mask_outputs[:, 1, 0]
+    neg_mask2_vec = denoised_mask_outputs[:, 1, 1]
+
+
+
+    pos_pairs = [(pos_mask1_vec, pos_mask2_vec)]
+    neg_pairs = [
+        (pos_mask1_vec, neg_mask1_vec),
+        (pos_mask1_vec, neg_mask2_vec),
+        (pos_mask2_vec, neg_mask1_vec),
+        (pos_mask2_vec, neg_mask2_vec)
+    ]
+    
+    return pos_pairs, neg_pairs
+
+
+def get_pos_neg_pairs(denoised_mask_outputs):
+    pos_mask1_vec = denoised_mask_outputs[:, 0, 0]
+    pos_mask2_vec = denoised_mask_outputs[:, 1, 1]
+    neg_mask1_vec = denoised_mask_outputs[:, 0, 1]
+    neg_mask2_vec = denoised_mask_outputs[:, 1, 0]
+
+
+
+    pos_pairs = [(pos_mask1_vec, pos_mask2_vec)]
+    neg_pairs = [
+        (pos_mask1_vec, neg_mask1_vec),
+        (pos_mask1_vec, neg_mask2_vec),
+        (pos_mask2_vec, neg_mask1_vec),
+        (pos_mask2_vec, neg_mask2_vec)
+    ]
+    
+    return pos_pairs, neg_pairs
+
+
+def get_sent_output(denoised_mask_outputs):
+    pos_mask1_vec = denoised_mask_outputs[:, 0, 0]
+    pos_mask2_vec = denoised_mask_outputs[:, 1, 1]
+    sent_mask = (pos_mask1_vec + pos_mask2_vec) / 2
+    return sent_mask
+
 
 def evaluate(encoder, input_ids, attention_mask, sent_positions, mask_token_id, pad_token_id):
     batch_size = input_ids.size(0)
@@ -138,10 +182,11 @@ def evaluate(encoder, input_ids, attention_mask, sent_positions, mask_token_id, 
 
     denoised_mask_outputs = denoised_mask_outputs.view((batch_size, num_sent, -1, denoised_mask_outputs.size(-1))) # (batch_size, num_sent, mask_num, hidden_size)
     
-    pos_mask_output_pooler = denoised_mask_outputs[:,0,:,:].squeeze(1) 
+    # pos_mask_output_pooler = denoised_mask_outputs[:,0,:,:].squeeze(1) 
     # pos_mask_output_pooler, _ = pos_mask_output_pooler.max(dim = 1)
     # pos_mask_output_pooler= pos_mask_output_pooler.sum(dim = 1)
-    pos_mask_output_pooler= pos_mask_output_pooler.mean(dim = 1)
+    # pos_mask_output_pooler= pos_mask_output_pooler.mean(dim = 1)
+    pos_mask_output_pooler = get_sent_output(denoised_mask_outputs)
 
     return BaseModelOutputWithPoolingAndCrossAttentions(
             pooler_output=pos_mask_output_pooler,
@@ -186,10 +231,11 @@ def cl_forward(cls,
 
     denoised_mask_outputs = denoised_mask_outputs.view((batch_size, num_sent, -1, denoised_mask_outputs.size(-1))) # (batch_size, num_sent, mask_num, hidden_size)
     if sent_emb:
-        pos_mask_output_pooler = denoised_mask_outputs[:,0,:,:].squeeze(1) 
+        # pos_mask_output_pooler = denoised_mask_outputs[:,0,:,:].squeeze(1) 
         # pos_mask_output_pooler, _ = pos_mask_output_pooler.max(dim = 1)
         # pos_mask_output_pooler= pos_mask_output_pooler.sum(dim = 1)
-        pos_mask_output_pooler= pos_mask_output_pooler.mean(dim = 1)
+        # pos_mask_output_pooler= pos_mask_output_pooler.mean(dim = 1)
+        pos_mask_output_pooler = get_sent_output(denoised_mask_outputs)
 
         return BaseModelOutputWithPoolingAndCrossAttentions(
             pooler_output=pos_mask_output_pooler,
@@ -200,10 +246,10 @@ def cl_forward(cls,
 
     # outputs = denoised_mask_outputs[:, 0].mean(dim=1)  # (batch_size, hidden_size)  
 
-    pos_mask1_vec = denoised_mask_outputs[:, 0, 0]
-    pos_mask2_vec = denoised_mask_outputs[:, 0, 1]
-    neg_mask1_vec = denoised_mask_outputs[:, 1, 0]
-    neg_mask2_vec = denoised_mask_outputs[:, 1, 1]
+    # pos_mask1_vec = denoised_mask_outputs[:, 0, 0]
+    # pos_mask2_vec = denoised_mask_outputs[:, 0, 1]
+    # neg_mask1_vec = denoised_mask_outputs[:, 1, 0]
+    # neg_mask2_vec = denoised_mask_outputs[:, 1, 1]
 
     # pos_mask1_vec = denoised_mask_outputs[:, 0, 0]
     # pos_mask2_vec = denoised_mask_outputs[:, 1, 1]
@@ -212,13 +258,15 @@ def cl_forward(cls,
 
 
 
-    pos_pairs = [(pos_mask1_vec, pos_mask2_vec)]
-    neg_pairs = [
-        (pos_mask1_vec, neg_mask1_vec),
-        (pos_mask1_vec, neg_mask2_vec),
-        (pos_mask2_vec, neg_mask1_vec),
-        (pos_mask2_vec, neg_mask2_vec)
-    ]
+    # pos_pairs = [(pos_mask1_vec, pos_mask2_vec)]
+    # neg_pairs = [
+    #     (pos_mask1_vec, neg_mask1_vec),
+    #     (pos_mask1_vec, neg_mask2_vec),
+    #     (pos_mask2_vec, neg_mask1_vec),
+    #     (pos_mask2_vec, neg_mask2_vec)
+    # ]
+
+    pos_pairs, neg_pairs = get_pos_neg_pairs(denoised_mask_outputs)
     # 计算正样本对的相似度（余弦相似度）
     pos_similarities = [cls.sim(vec1.unsqueeze(1), vec2.unsqueeze(0)) for vec1, vec2 in pos_pairs]  # 每个元素形状 (batch_size,)
     # pos_similarities = torch.stack(pos_similarities, dim = 0) # (num_pos, batch_size, batch_size)
