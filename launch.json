@@ -1,0 +1,96 @@
+{
+    // 使用 IntelliSense 了解相关属性。 
+    // 悬停以查看现有属性的描述。
+    // 欲了解更多信息，请访问: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [   
+        {
+            "name": "Python: Current File",
+            "type": "python",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "env": {
+                "PYTHONPATH": "/workspace/myvenv3.8/"
+            },
+            "python": "/workspace/myvenv3.8/bin/python",
+            "justMyCode": false,
+            "args": ["./yaml_test.yaml"]
+        },
+        {
+            "name": "Python: cot-bert",
+            "type": "python",
+            "request": "launch",
+            "justMyCode": false,
+            "program": "/workspace/CoT-BERT/code-for-BERT/train.py",
+            "cwd": "/workspace/CoT-BERT/code-for-BERT",
+            "env": {
+                "PYTHONPATH": "/workspace/myvenv3.8/"
+            },
+            "python": "/workspace/myvenv3.8/bin/python",
+            // "python": "",
+            "console": "integratedTerminal",
+            "args": []
+        },
+        {
+            "name": "Python: evl-cot-bert",
+            "type": "python",
+            "request": "launch",
+            "justMyCode": false,
+            "program": "/workspace/CoT-BERT/code-for-BERT/evaluation.py",
+            "cwd": "/workspace/CoT-BERT/code-for-BERT",
+            "env": {
+                "PYTHONPATH": "/workspace/myvenv3.8/"
+            },
+            "python": "/workspace/myvenv3.8/bin/python",
+            // "python": "",
+            "console": "integratedTerminal",
+            "args": []
+        },
+        {
+            "name": "Python: cot-lmf",
+            "type": "python",
+            "request": "launch",
+            "justMyCode": false,
+            "program": "/workspace/CoT-BERT/code-for-LMF/lmf_train.py",
+            "cwd": "/workspace/CoT-BERT/code-for-LMF",
+            "env": {
+                "PYTHONPATH": "/workspace/myvenv3.8/"
+            },
+            "python": "/workspace/myvenv3.8/bin/python",
+            // "python": "",
+            "console": "integratedTerminal",
+            "args": []
+        },
+        {
+            "name": "Python: evl-cot-lmf",
+            "type": "python",
+            "request": "launch",
+            "justMyCode": false,
+            "program": "/workspace/CoT-BERT/code-for-LMF/lmf_evaluation.py",
+            "cwd": "/workspace/CoT-BERT/code-for-LMF",
+            "env": {
+                "PYTHONPATH": "/workspace/myvenv3.8/"
+            },
+            "python": "/workspace/myvenv3.8/bin/python",
+            // "python": "",
+            "console": "integratedTerminal",
+            "args": []
+        },
+        {
+            "name": "Python: prompt-bert",
+            "type": "python",
+            "request": "launch",
+            "justMyCode": false,
+            "program": "/workspace/Prompt-BERT/train.py",
+            "cwd": "/workspace/Prompt-BERT/",
+            "env": {
+                "PYTHONPATH": "/workspace/myvenv3.8/"
+            },
+            "python": "/workspace/myvenv3.8/bin/python",
+            // "python": "",
+            "console": "integratedTerminal",
+            "args": []
+        }
+    ]
+}
