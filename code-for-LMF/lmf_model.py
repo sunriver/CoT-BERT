@@ -122,10 +122,12 @@ def cl_get_mask_outputs(encoder, input_ids, attention_mask, mask_token_id):
 
     mask1_hidden = last_hidden_state[mask1]  # [MASK1] 的隐藏状态
     mask2_hidden = last_hidden_state[mask2]  # [MASK2] 的隐藏状态
+
+    device = input_ids.device
     
-    mask_outputs = torch.cat([mask1_hidden, mask2_hidden], dim=0)
+    mask_outputs = torch.stack([mask1_hidden, mask2_hidden], dim=1).to(device)
     
-    mask_outputs = mask_outputs.view((-1, mask_num, mask_outputs.size(-1)))  # (batch_size * num_sent, mask_num, hidden_size)
+    # mask_outputs = mask_outputs.view((-1, mask_num, mask_outputs.size(-1)))  # (batch_size * num_sent, mask_num, hidden_size)
     return outputs, mask_outputs
 
 
