@@ -95,8 +95,41 @@ def get_noise_inputs(orig_input_ids, orig_attention_mask, sent_positions, device
     return noise_input_ids, noise_attention_mask
 
 
-
+from token_util import get_mask_token_id
 def cl_get_mask_outputs(encoder, input_ids, attention_mask, mask_token_id):
+    # batch_size = input_ids.size(0)
+    # num_sent = input_ids.size(1)
+
+    # # Flatten input for encoding
+    # input_ids = input_ids.view((-1, input_ids.size(-1)))  # (batch_size * num_sent, len)
+    # attention_mask = attention_mask.view((-1, attention_mask.size(-1)))  # (batch_size * num_sent, len)
+
+    mask_id, mask1_id, mask2_id = get_mask_token_id()
+    outputs = encoder(
+        input_ids,
+        attention_mask=attention_mask,
+        output_hidden_states=False,
+        return_dict=True,
+    )
+    mask_num = 2
+
+    last_hidden_state = outputs.last_hidden_state
+    
+    
+
+    mask1 = (input_ids == mask1_id)  # 假设 mask_token_id 是列表 [mask1_id, mask2_id]
+    mask2 = (input_ids == mask2_id)
+
+    mask1_hidden = last_hidden_state[mask1]  # [MASK1] 的隐藏状态
+    mask2_hidden = last_hidden_state[mask2]  # [MASK2] 的隐藏状态
+    
+    mask_outputs = torch.cat([mask1_hidden, mask2_hidden], dim=0)
+    
+    mask_outputs = mask_outputs.view((-1, mask_num, mask_outputs.size(-1)))  # (batch_size * num_sent, mask_num, hidden_size)
+    return outputs, mask_outputs
+
+
+def cl_get_mask_outputs2(encoder, input_ids, attention_mask, mask_token_id):
     # batch_size = input_ids.size(0)
     # num_sent = input_ids.size(1)
 

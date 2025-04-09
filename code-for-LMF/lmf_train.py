@@ -486,7 +486,7 @@ class OurTrainingArguments(TrainingArguments):
 
 
 from parse_args_util import load_configs
-from token_util import prepare_train_features
+from token_util import init_my_special_tokens, prepare_train_features
 def main():
     # See all possible arguments in src/transformers/training_args.py
     # or by passing the --help flag to this script.
@@ -603,6 +603,7 @@ def main():
                 use_auth_token=True if model_args.use_auth_token else None,
                 model_args=model_args,
             )
+         
 
             if model_args.mask_embedding_sentence_org_mlp:
                 from transformers import BertForMaskedLM, BertConfig
@@ -613,7 +614,8 @@ def main():
     else:
         raise NotImplementedError
     
-    model.resize_token_embeddings(len(tokenizer))
+    # model.resize_token_embeddings(len(tokenizer))
+    init_my_special_tokens(model, tokenizer)
 
     # Prepare features
     column_names = datasets["train"].column_names
