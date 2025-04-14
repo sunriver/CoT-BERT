@@ -217,11 +217,11 @@ def evaluate(encoder, input_ids, attention_mask, sent_positions, mask_token_id, 
 
     denoised_mask_outputs = denoised_mask_outputs.view((batch_size, num_sent, -1, denoised_mask_outputs.size(-1))) # (batch_size, num_sent, mask_num, hidden_size)
     
-    # pos_mask_output_pooler = denoised_mask_outputs[:,0,:,:].squeeze(1) 
+    pos_mask_output_pooler = denoised_mask_outputs[:,0,:,:].squeeze(1) 
     # pos_mask_output_pooler, _ = pos_mask_output_pooler.max(dim = 1)
     # pos_mask_output_pooler= pos_mask_output_pooler.sum(dim = 1)
-    # pos_mask_output_pooler= pos_mask_output_pooler.mean(dim = 1)
-    pos_mask_output_pooler = get_sent_output(denoised_mask_outputs)
+    pos_mask_output_pooler= pos_mask_output_pooler.mean(dim = 1)
+    # pos_mask_output_pooler = get_sent_output(denoised_mask_outputs)
 
     return BaseModelOutputWithPoolingAndCrossAttentions(
             pooler_output=pos_mask_output_pooler,
@@ -266,11 +266,11 @@ def cl_forward(cls,
 
     denoised_mask_outputs = denoised_mask_outputs.view((batch_size, num_sent, -1, denoised_mask_outputs.size(-1))) # (batch_size, num_sent, mask_num, hidden_size)
     if sent_emb:
-        # pos_mask_output_pooler = denoised_mask_outputs[:,0,:,:].squeeze(1) 
+        pos_mask_output_pooler = denoised_mask_outputs[:,0,:,:].squeeze(1) 
         # pos_mask_output_pooler, _ = pos_mask_output_pooler.max(dim = 1)
         # pos_mask_output_pooler= pos_mask_output_pooler.sum(dim = 1)
-        # pos_mask_output_pooler= pos_mask_output_pooler.mean(dim = 1)
-        pos_mask_output_pooler = get_sent_output(denoised_mask_outputs)
+        pos_mask_output_pooler= pos_mask_output_pooler.mean(dim = 1)
+        # pos_mask_output_pooler = get_sent_output(denoised_mask_outputs)
 
         return BaseModelOutputWithPoolingAndCrossAttentions(
             pooler_output=pos_mask_output_pooler,
