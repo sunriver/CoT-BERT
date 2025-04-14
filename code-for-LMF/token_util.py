@@ -98,7 +98,7 @@ def prepare_eval_features0(tokenizer, sentences):
             s = tokenizer.encode(sent, add_special_tokens=False)[:max_seq_length]
             # s = [sep_token_id, *s, sep_token_id]
             sent_features['input_ids'].append([bs + s + es_pos])
-            sent_positions = ((len(bs), len(bs+s)))
+            sent_positions = ((len(bs), len(bs+s)),)
             sent_features['sent_positions'].append(sent_positions)
         return sent_features
 
@@ -114,7 +114,7 @@ def prepare_eval_features(tokenizer, sentences):
                 sent = " "
             s = tokenizer.encode(sent, add_special_tokens=False)[:max_seq_length]
             sent_features['input_ids'].append([bs + s + es_pos])
-            sent_positions = ((len(bs), len(bs+s)))
+            sent_positions = ((len(bs), len(bs+s)),)
             sent_features['sent_positions'].append(sent_positions)
         return sent_features
 

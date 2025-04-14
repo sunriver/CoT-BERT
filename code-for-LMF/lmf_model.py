@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.distributed as dist
+import torch.nn.functional as F
 
 from transformers.models.bert.modeling_bert import BertPreTrainedModel, BertModel
 from transformers.models.roberta.modeling_roberta import RobertaPreTrainedModel, RobertaModel
@@ -64,6 +65,35 @@ class Similarity(nn.Module):
     def forward(self, x, y):
         return self.cos(x, y) / self.temp
 
+
+class EnhancedContrastiveLoss(nn.Module):
+    def __init__(self, temp=0.07, neg2_weight=1.0):
+        super().__init__()
+        self.temp = temp
+        self.neg2_weight = neg2_weight
+        self.cos = nn.CosineSimilarity(dim=-1)
+
+    def forward(self, anchors, positives, negatives, neg2_negatives):
+        # 正样本对相似度
+        pos_sim = self.cos(anchors, positives) / self.temp
+        
+        # 所有负样本对相似度
+        neg_sim = self.cos(anchors.unsqueeze(1), negatives.unsqueeze(0)) / self.temp
+        neg2_sim = self.cos(neg2_negatives.unsqueeze(1), negatives_negatives.unsqueeze(0)) / self.temp
+        
+        # 构建logits
+        logits = torch.cat([pos_sim, neg_sim, neg2_sim], dim=1)
+        
+        # 标准对比损失
+        labels = torch.arange(logits.size(0)).to(anchors.device)
+        ce_loss = nn.CrossEntropyLoss()(logits, labels)
+        
+        # 负样本对相似度惩罚
+        neg2_target = torch.ones_like(neg2_sim)  # 希望相似度接近1
+        sim_loss = F.mse_loss(neg2_sim, neg2_target)
+        
+        # 总损失
+        return ce_loss + self.neg2_weight * sim_loss
 
 
 def cl_init(cls, config):
@@ -186,10 +216,14 @@ def get_pos_neg_pairs(denoised_mask_outputs):
         (pos_mask1_vec, neg_mask1_vec),
         (pos_mask1_vec, neg_mask2_vec),
         (pos_mask2_vec, neg_mask1_vec),
-        (pos_mask2_vec, neg_mask2_vec)
+        (pos_mask2_vec, neg_mask2_vec),
+        # (pos_mask2_vec, neg_mask2_vec),
+        # (neg_mask2_vec, neg_mask2_vec)
     ]
+
+    neg2_pairs = [(neg_mask1_vec, neg_mask2_vec)]
     
-    return pos_pairs, neg_pairs
+    return pos_pairs, neg_pairs, neg2_pairs
 
 
 def get_sent_output(denoised_mask_outputs):
@@ -281,27 +315,8 @@ def cl_forward(cls,
 
     # outputs = denoised_mask_outputs[:, 0].mean(dim=1)  # (batch_size, hidden_size)  
 
-    # pos_mask1_vec = denoised_mask_outputs[:, 0, 0]
-    # pos_mask2_vec = denoised_mask_outputs[:, 0, 1]
-    # neg_mask1_vec = denoised_mask_outputs[:, 1, 0]
-    # neg_mask2_vec = denoised_mask_outputs[:, 1, 1]
 
-    # pos_mask1_vec = denoised_mask_outputs[:, 0, 0]
-    # pos_mask2_vec = denoised_mask_outputs[:, 1, 1]
-    # neg_mask1_vec = denoised_mask_outputs[:, 0, 1]
-    # neg_mask2_vec = denoised_mask_outputs[:, 1, 0]
-
-
-
-    # pos_pairs = [(pos_mask1_vec, pos_mask2_vec)]
-    # neg_pairs = [
-    #     (pos_mask1_vec, neg_mask1_vec),
-    #     (pos_mask1_vec, neg_mask2_vec),
-    #     (pos_mask2_vec, neg_mask1_vec),
-    #     (pos_mask2_vec, neg_mask2_vec)
-    # ]
-
-    pos_pairs, neg_pairs = get_pos_neg_pairs(denoised_mask_outputs)
+    pos_pairs, neg_pairs, neg2_pairs = get_pos_neg_pairs(denoised_mask_outputs)
     # 计算正样本对的相似度（余弦相似度）
     pos_similarities = [cls.sim(vec1.unsqueeze(1), vec2.unsqueeze(0)) for vec1, vec2 in pos_pairs]  # 每个元素形状 (batch_size,)
     # pos_similarities = torch.stack(pos_similarities, dim = 0) # (num_pos, batch_size, batch_size)
@@ -312,13 +327,22 @@ def cl_forward(cls,
 
 
     # 合并相似度并计算 logits
-    cos_sim = torch.cat([*pos_similarities, *neg_similarities], dim=1)  # (num_pos + num_neg, batch_size)
+    cos_sim = torch.cat([*pos_similarities, *neg_similarities], dim=1).to(input_ids.device)  # (num_pos + num_neg, batch_size)
 
     loss_fct = nn.CrossEntropyLoss()
 
     labels = torch.arange(cos_sim.size(0)).long().to(input_ids.device)
 
-    loss = loss_fct(cos_sim, labels)
+    ce_loss = loss_fct(cos_sim, labels)
+
+     # 负样本对相似度惩罚
+    neg2_similarities = [cls.sim(vec1.unsqueeze(1), vec2.unsqueeze(0)) for vec1, vec2 in neg2_pairs]
+    neg2_sim = torch.stack(neg2_similarities, dim=0) 
+    neg2_target = torch.ones_like(neg2_sim)  # 希望相似度接近1
+    sim_loss = F.mse_loss(neg2_sim, neg2_target)
+
+    neg2_weight = 0.75
+    loss = ce_loss + neg2_weight * sim_loss
 
     return SequenceClassifierOutput(
         loss=loss,
