@@ -50,7 +50,7 @@ def prepare_train_features0(tokenizer, sentences):
         return sent_features
 
 
-def prepare_train_features(tokenizer, sentences):
+def prepare_train_features2(tokenizer, sentences):
         sent_features = {'input_ids': [], 'sent_positions': []}
         bs = tokenizer.encode('The sentence : "')[:-1]
         es_pos = tokenizer.encode('" means [MASK1], but does not means [MASK2].')[1:]
@@ -66,7 +66,7 @@ def prepare_train_features(tokenizer, sentences):
             sent_features['sent_positions'].append(sent_positions)
         return sent_features
 
-def prepare_train_features2(tokenizer, sentences):
+def prepare_train_features(tokenizer, sentences):
         sent_features = {'input_ids': [], 'sent_positions': []}
         bs = tokenizer.encode('The sentence : "')[:-1]
         es_pos = tokenizer.encode('" means [MASK], but does not means [MASK].')[1:]
@@ -102,13 +102,13 @@ def prepare_eval_features0(tokenizer, sentences):
             sent_features['sent_positions'].append(sent_positions)
         return sent_features
 
-def prepare_eval_features2(tokenizer, sentences):
+def prepare_eval_features(tokenizer, sentences):
         sent_features = {'input_ids': [], 'sent_positions': []}
         bs = tokenizer.encode('The sentence : "')[:-1]
         # es_pos = tokenizer.encode('" not only implies [MASK] but also suggests [MASK].')[:-1]
         # es_pos = tokenizer.encode('" means [MASK], and also means [MASK].')[:-1]
-        # es_pos = tokenizer.encode('" means [MASK], and also means [MASK].')[1:]
-        es_pos = tokenizer.encode('" means [MASK], so it can be summarized as [MASK].')[1:]
+        es_pos = tokenizer.encode('" means [MASK], and also means [MASK].')[1:]
+        # es_pos = tokenizer.encode('" means [MASK], so it can be summarized as [MASK].')[1:]
         for i, sent in enumerate(sentences):
             if sent is None:
                 sent = " "
@@ -118,5 +118,5 @@ def prepare_eval_features2(tokenizer, sentences):
             sent_features['sent_positions'].append(sent_positions)
         return sent_features
 
-def prepare_eval_features(tokenizer, sentences):
-    return prepare_train_features(tokenizer, sentences)
+# def prepare_eval_features(tokenizer, sentences):
+#     return prepare_train_features(tokenizer, sentences)

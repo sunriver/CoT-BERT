@@ -96,7 +96,7 @@ def get_noise_inputs(orig_input_ids, orig_attention_mask, sent_positions, device
 
 
 from token_util import get_mask_token_id
-def cl_get_mask_outputs(encoder, input_ids, attention_mask, mask_token_id):
+def cl_get_mask_outputs1(encoder, input_ids, attention_mask, mask_token_id):
     # batch_size = input_ids.size(0)
     # num_sent = input_ids.size(1)
 
@@ -131,7 +131,7 @@ def cl_get_mask_outputs(encoder, input_ids, attention_mask, mask_token_id):
     return outputs, mask_outputs
 
 
-def cl_get_mask_outputs2(encoder, input_ids, attention_mask, mask_token_id):
+def cl_get_mask_outputs(encoder, input_ids, attention_mask, mask_token_id):
     # batch_size = input_ids.size(0)
     # num_sent = input_ids.size(1)
 
