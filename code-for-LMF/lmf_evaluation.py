@@ -145,7 +145,7 @@ def main():
 
             special_keys = ['input_ids', 'attention_mask', 'token_type_ids', 'sent_positions']
         
-            features = prepare_eval_features(self.tokenizer, sentences)
+            features = prepare_eval_features(tokenizer, sentences)
             input_ids = features['input_ids']
 
             bs = len(input_ids)

@@ -68,10 +68,10 @@ def prepare_train_features2(tokenizer, sentences):
 
 def prepare_train_features(tokenizer, sentences):
         sent_features = {'input_ids': [], 'sent_positions': []}
-        bs = tokenizer.encode('Let\'s think step by step, the sentence of "')[:-1]
-        es_pos = tokenizer.encode('" means [MASK], but does not means [MASK].')[1:]
+        bs = tokenizer.encode("Let's think step by step, the sentence of '")[:-1]
+        es_pos = tokenizer.encode("' means [MASK], but does not means [MASK].")[1:]
         # es_pos = tokenizer.encode('" means [MASK], so it can be summarized as [MASK].')[1:]
-        es_neg = tokenizer.encode('" does not mean [MASK], but means [MASK].')[1:]
+        es_neg = tokenizer.encode("' does not mean [MASK], but means [MASK].")[1:]
         # es_neg = tokenizer.encode('" does not mean [MASK], and it also does not mean [MASK].')[1:]
         for i, sent in enumerate(sentences):
             if sent is None:
@@ -119,10 +119,10 @@ def prepare_eval_features0(tokenizer, sentences):
 
 def prepare_eval_features(tokenizer, sentences):
         sent_features = {'input_ids': [], 'sent_positions': []}
-        bs = tokenizer.encode('Let\'s think step by step, the sentence of "')[:-1]
+        bs = tokenizer.encode("Let's think step by step, the sentence of '")[:-1]
         # es_pos = tokenizer.encode('" not only implies [MASK] but also suggests [MASK].')[:-1]
         # es_pos = tokenizer.encode('" means [MASK], and also means [MASK].')[:-1]
-        es_pos = tokenizer.encode('" means [MASK], and also means [MASK].')[1:]
+        es_pos = tokenizer.encode("' means [MASK], and also means [MASK].")[1:]
         # es_pos = tokenizer.encode('" means [MASK], so it can be summarized as [MASK].')[1:]
         for i, sent in enumerate(sentences):
             if sent is None:
