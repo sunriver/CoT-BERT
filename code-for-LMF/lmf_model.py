@@ -336,13 +336,15 @@ def cl_forward(cls,
     ce_loss = loss_fct(cos_sim, labels)
 
      # 负样本对相似度惩罚
-    neg2_similarities = [cls.sim(vec1.unsqueeze(1), vec2.unsqueeze(0)) for vec1, vec2 in neg2_pairs]
-    neg2_sim = torch.stack(neg2_similarities, dim=0) 
-    neg2_target = torch.ones_like(neg2_sim)  # 希望相似度接近1
-    sim_loss = F.mse_loss(neg2_sim, neg2_target)
+    # neg2_similarities = [cls.sim(vec1.unsqueeze(1), vec2.unsqueeze(0)) for vec1, vec2 in neg2_pairs]
+    # neg2_sim = torch.stack(neg2_similarities, dim=0) 
+    # neg2_target = torch.ones_like(neg2_sim)  # 希望相似度接近1
+    # sim_loss = F.mse_loss(neg2_sim, neg2_target)
 
-    neg2_weight = 0.75
-    loss = ce_loss + neg2_weight * sim_loss
+    # neg2_weight = 0.15
+    # loss = ce_loss + neg2_weight * sim_loss
+
+    loss = ce_loss
 
     return SequenceClassifierOutput(
         loss=loss,
