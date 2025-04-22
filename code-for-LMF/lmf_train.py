@@ -652,8 +652,8 @@ def main():
             batched=True,
             num_proc=data_args.preprocessing_num_workers,
             remove_columns=column_names,
-            # load_from_cache_file=not data_args.overwrite_cache,
-            load_from_cache_file=False,
+            load_from_cache_file=not data_args.overwrite_cache,
+            # load_from_cache_file=False,
         )
 
 
@@ -719,6 +719,7 @@ def main():
     # Training
     if training_args.do_train:
         model_path = None
+        torch.autograd.set_detect_anomaly(True)  # 开启异常检测
         train_result = trainer.train(model_path=model_path)
         trainer.save_model()  # Saves the tokenizer too for easy upload
 
