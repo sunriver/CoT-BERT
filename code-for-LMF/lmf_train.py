@@ -486,7 +486,9 @@ class OurTrainingArguments(TrainingArguments):
 
 
 from parse_args_util import load_configs
-from token_util import init_my_special_tokens, prepare_train_features
+from token_util import init_my_special_tokens
+# from token_util import prepare_train_features
+from strategy_manage import get_strategy
 def main():
     # See all possible arguments in src/transformers/training_args.py
     # or by passing the --help flag to this script.
@@ -643,7 +645,7 @@ def main():
 
     def prepare_features2(examples):
         sentences = examples[sent0_cname]
-        return prepare_train_features(tokenizer, sentences)
+        return get_strategy().prepare_train_features(tokenizer, sentences)
    
 
     if training_args.do_train:

@@ -113,6 +113,7 @@ def cl_init(cls, config):
 
 
 from token_util import get_mask_token_id, get_null_token_id
+from strategy_manage import get_strategy
 def get_noise_inputs(input_ids, attention_mask, sent_positions, pad_token_id = 0):
     """将原始输入中的句子部分替换为PAD"""
     noise_input_ids = input_ids.clone()
@@ -383,7 +384,7 @@ def cl_forward(cls,
     # outputs = denoised_mask_outputs[:, 0].mean(dim=1)  # (batch_size, hidden_size)  
 
 
-    pos_pairs, neg_pairs = get_pos_neg_pairs(denoised_mask_outputs)
+    pos_pairs, neg_pairs = get_strategy().get_pos_neg_pairs(denoised_mask_outputs)
     # 计算正样本对的相似度（余弦相似度）
     pos_similarities = [cls.sim(vec1.unsqueeze(1), vec2.unsqueeze(0)) for vec1, vec2 in pos_pairs]  # 每个元素形状 (batch_size,)
     # pos_similarities = torch.stack(pos_similarities, dim = 0) # (num_pos, batch_size, batch_size)

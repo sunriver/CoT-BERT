@@ -8,7 +8,8 @@ import numpy as np
 from prettytable import PrettyTable
 from transformers import AutoModel, AutoTokenizer, HfArgumentParser, AutoConfig
 from  parse_args_util import load_configs
-from token_util import prepare_eval_features
+# from token_util import prepare_eval_features
+from strategy_manage import get_strategy
 from lmf_model import BertForCL, evaluate
 
 # Set up logger
@@ -145,7 +146,7 @@ def main():
 
             special_keys = ['input_ids', 'attention_mask', 'token_type_ids', 'sent_positions']
         
-            features = prepare_eval_features(tokenizer, sentences)
+            features = get_strategy().prepare_eval_features(tokenizer, sentences)
             input_ids = features['input_ids']
 
             bs = len(input_ids)

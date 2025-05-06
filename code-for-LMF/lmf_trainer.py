@@ -49,7 +49,8 @@ if version.parse(torch.__version__) >= version.parse("1.6"):
     from torch.cuda.amp import autocast
 
 from transformers.trainer import _model_unwrap
-from token_util import prepare_eval_features
+# from token_util import prepare_eval_features
+from strategy_manage import get_strategy
 
 # Set path to SentEval
 PATH_TO_SENTEVAL = '../SentEval'
@@ -91,7 +92,7 @@ class CLTrainer(Trainer):
             special_keys = ['input_ids', 'attention_mask', 'token_type_ids', 'sent_positions']
             
 
-            features = prepare_eval_features(self.tokenizer, sentences)
+            features = get_strategy().prepare_eval_features(self.tokenizer, sentences)
             input_ids = features['input_ids']
 
             bs = len(input_ids)

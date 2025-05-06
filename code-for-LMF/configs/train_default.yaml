@@ -10,11 +10,11 @@ max_seq_length: 32
 evaluation_strategy: steps
 metric_for_best_model: stsb_spearman
 load_best_model_at_end: true
-eval_steps: 20
+eval_steps: 8
 overwrite_output_dir: true
 temp: 0.05
 do_train: true
-fp16: false
+fp16: true
 preprocessing_num_workers: 10
 mlp_only_train: true
 mask_embedding_sentence: true
