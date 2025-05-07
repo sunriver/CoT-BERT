@@ -9,4 +9,4 @@ mask_embedding_sentence_template: '*cls*_The_sentence_of_"*sent_0*"_means_*mask*
 mask_embedding_sentence_different_template: '*cls*_The_sentence_of_"*sent_0*"_means_*mask*_,_does_not_mean_*mask*_,_so_it_can_be_summarized_as_*mask*_._*sep+*'
 # mask_embedding_sentence_different_template: '*cls*_The_sentence_:_"*sent_0*"_means_*mask*_,_so_it_can_be_summarized_as_*mask*_._*sep+*'
 mask_embedding_sentence_negative_template: '*cls*_The_sentence_:_"*sent_0*"_does_not_mean_*mask*_and_*mask*_,_so_it_cannot_be_summarized_as_*mask*_._*sep+*'
-
+strategy: "cot1#1#0$1"

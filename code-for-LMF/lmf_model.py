@@ -9,34 +9,6 @@ from transformers.modeling_outputs import SequenceClassifierOutput, BaseModelOut
 
 import math
 
-class MaskWeightLayer(nn.Module):
-
-    def __init__(self, config):
-        super().__init__()
-        self.config = config
-        self.attn = nn.MultiheadAttention(embed_dim = config.hidden_size, num_heads=8)
-        self.pool = nn.AdaptiveAvgPool1d(1)  
-        # self.fc = nn.Linear(embed_dim, output_dim)  # 调整维度
-
-    def forward1(self, x):
-        # input: (batch_size, mask_num, embed_dim)
-        hidden_size = self.config.hidden_size
-        Q = K = V = x
-        scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(hidden_size)
-        attn_weights = torch.softmax(scores, dim=-1)
-        output = torch.matmul(attn_weights, V)
-        return output
-
-    def forward(self, x):
-        # pass
-        # x: (batch_size, mask_num, embed_dim)
-        attn_output, weights = self.attn(x, x, x)#
-        # 沿序列长度维度池化
-        pooled_output = self.pool(attn_output.transpose(1, 2)).squeeze(2) 
-        return pooled_output
-        
-
-
 
 
 class MLPLayer(nn.Module):
@@ -66,36 +38,6 @@ class Similarity(nn.Module):
         return self.cos(x, y) / self.temp
 
 
-class EnhancedContrastiveLoss(nn.Module):
-    def __init__(self, temp=0.07, neg2_weight=1.0):
-        super().__init__()
-        self.temp = temp
-        self.neg2_weight = neg2_weight
-        self.cos = nn.CosineSimilarity(dim=-1)
-
-    def forward(self, anchors, positives, negatives, neg2_negatives):
-        # 正样本对相似度
-        pos_sim = self.cos(anchors, positives) / self.temp
-        
-        # 所有负样本对相似度
-        neg_sim = self.cos(anchors.unsqueeze(1), negatives.unsqueeze(0)) / self.temp
-        neg2_sim = self.cos(neg2_negatives.unsqueeze(1), negatives_negatives.unsqueeze(0)) / self.temp
-        
-        # 构建logits
-        logits = torch.cat([pos_sim, neg_sim, neg2_sim], dim=1)
-        
-        # 标准对比损失
-        labels = torch.arange(logits.size(0)).to(anchors.device)
-        ce_loss = nn.CrossEntropyLoss()(logits, labels)
-        
-        # 负样本对相似度惩罚
-        neg2_target = torch.ones_like(neg2_sim)  # 希望相似度接近1
-        sim_loss = F.mse_loss(neg2_sim, neg2_target)
-        
-        # 总损失
-        return ce_loss + self.neg2_weight * sim_loss
-
-
 def cl_init(cls, config):
     """
     Contrastive learning class init function.
@@ -114,6 +56,7 @@ def cl_init(cls, config):
 
 from token_util import get_mask_token_id, get_null_token_id
 from strategy_manage import get_strategy
+
 def get_noise_inputs(input_ids, attention_mask, sent_positions, pad_token_id = 0):
     """将原始输入中的句子部分替换为PAD"""
     noise_input_ids = input_ids.clone()
@@ -203,94 +146,6 @@ def cl_get_mask_outputs(encoder, input_ids, attention_mask, mask_token_id):
     mask_outputs = mask_outputs.view((-1, mask_num, mask_outputs.size(-1)))  # (batch_size * num_sent, mask_num, hidden_size)
     return outputs, mask_outputs
 
-def get_pos_neg_pairs0(denoised_mask_outputs):
-    pos_mask1_vec = denoised_mask_outputs[:, 0, 0]
-    pos_mask2_vec = denoised_mask_outputs[:, 0, 1]
-    neg_mask1_vec = denoised_mask_outputs[:, 1, 0]
-    neg_mask2_vec = denoised_mask_outputs[:, 1, 1]
-
-    pos_pairs = [(pos_mask1_vec, pos_mask2_vec)]
-    neg_pairs = [
-        (pos_mask1_vec, neg_mask1_vec),
-        (pos_mask1_vec, neg_mask2_vec),
-        (pos_mask2_vec, neg_mask1_vec),
-        (pos_mask2_vec, neg_mask2_vec),
-        (neg_mask1_vec, neg_mask2_vec)
-    ]
-    
-    return pos_pairs, neg_pairs
-
-
-def get_pos_neg_pairs(denoised_mask_outputs):
-    pos_mask1_vec = denoised_mask_outputs[:, 0, 0]
-    pos_mask2_vec = denoised_mask_outputs[:, 1, 0]
-    neg_mask1_vec = denoised_mask_outputs[:, 2, 0]
-    neg_mask2_vec = denoised_mask_outputs[:, 3, 0]
-
-
-
-    pos_pairs = [(pos_mask1_vec, pos_mask2_vec)]
-    neg_pairs = [
-        (pos_mask1_vec, neg_mask1_vec),
-        (pos_mask1_vec, neg_mask2_vec),
-        (pos_mask2_vec, neg_mask1_vec),
-        (pos_mask2_vec, neg_mask2_vec),
-        (neg_mask1_vec, neg_mask2_vec),
-        # (neg_mask2_vec, neg_mask2_vec)
-    ]
-    
-    return pos_pairs, neg_pairs
-
-def get_pos_neg_pairs2(denoised_mask_outputs):
-    pos_mask1_vec = denoised_mask_outputs[:, 0, 0]
-    pos_mask2_vec = denoised_mask_outputs[:, 1, 1]
-    neg_mask1_vec = denoised_mask_outputs[:, 0, 1]
-    neg_mask2_vec = denoised_mask_outputs[:, 1, 0]
-
-
-
-    pos_pairs = [(pos_mask1_vec, pos_mask2_vec)]
-    neg_pairs = [
-        (pos_mask1_vec, neg_mask1_vec),
-        (pos_mask1_vec, neg_mask2_vec),
-        (pos_mask2_vec, neg_mask1_vec),
-        (pos_mask2_vec, neg_mask2_vec),
-        (neg_mask1_vec, neg_mask2_vec),
-        # (neg_mask2_vec, neg_mask2_vec)
-    ]
-    
-    return pos_pairs, neg_pairs
-
-def get_pos_neg_pairs1(denoised_mask_outputs):
-    pos_mask1_vec = denoised_mask_outputs[:, 0, 0]
-    pos_mask2_vec = denoised_mask_outputs[:, 1, 0]
-    neg_mask1_vec = denoised_mask_outputs[:, 0, 1]
-    neg_mask2_vec = denoised_mask_outputs[:, 1, 1]
-
-    pos_pairs = [(pos_mask1_vec, pos_mask2_vec)]
-    neg_pairs = [
-        (pos_mask1_vec, neg_mask1_vec),
-        (pos_mask1_vec, neg_mask2_vec),
-        (pos_mask2_vec, neg_mask1_vec),
-        (pos_mask2_vec, neg_mask2_vec),
-        (neg_mask1_vec, neg_mask2_vec),
-        # (neg_mask2_vec, neg_mask2_vec)
-    ]
-    
-    return pos_pairs, neg_pairs
-
-def get_sent_output(denoised_mask_outputs):
-    pos_mask_output_pooler = denoised_mask_outputs[:,0,:,:].squeeze(1) 
-    # pos_mask_output_pooler, _ = pos_mask_output_pooler.max(dim = 1)
-    # pos_mask_output_pooler= pos_mask_output_pooler.sum(dim = 1)
-    pos_mask_output_pooler= pos_mask_output_pooler.mean(dim = 1)
-    return pos_mask_output_pooler
-
-def get_sent_output1(denoised_mask_outputs):
-    pos_mask1_vec = denoised_mask_outputs[:, 0, 0]
-    pos_mask2_vec = denoised_mask_outputs[:, 1, 1]
-    sent_mask = (pos_mask1_vec + pos_mask2_vec) / 2
-    return sent_mask
 
 
 def evaluate(encoder, input_ids, attention_mask, sent_positions, mask_token_id, pad_token_id):
@@ -319,7 +174,7 @@ def evaluate(encoder, input_ids, attention_mask, sent_positions, mask_token_id, 
     # pos_mask_output_pooler, _ = pos_mask_output_pooler.max(dim = 1)
     # pos_mask_output_pooler= pos_mask_output_pooler.sum(dim = 1)
     # pos_mask_output_pooler= pos_mask_output_pooler.mean(dim = 1)
-    pos_mask_output_pooler = get_sent_output(denoised_mask_outputs)
+    pos_mask_output_pooler = get_strategy().get_sent_output(denoised_mask_outputs)
 
     return BaseModelOutputWithPoolingAndCrossAttentions(
             pooler_output=pos_mask_output_pooler,
@@ -372,7 +227,7 @@ def cl_forward(cls,
         # pos_mask_output_pooler, _ = pos_mask_output_pooler.max(dim = 1)
         # pos_mask_output_pooler= pos_mask_output_pooler.sum(dim = 1)
         # pos_mask_output_pooler= pos_mask_output_pooler.mean(dim = 1)
-        pos_mask_output_pooler = get_sent_output(denoised_mask_outputs)
+        pos_mask_output_pooler = get_strategy().get_sent_output(denoised_mask_outputs)
 
         return BaseModelOutputWithPoolingAndCrossAttentions(
             pooler_output=pos_mask_output_pooler,

@@ -29,3 +29,4 @@ mask_embedding_sentence_delta_no_delta_eval: true
 mask_embedding_sentence_delta: true
 dataloader_drop_last: true
 seed: 0
+strategy: "cot10#10$11"

@@ -25,3 +25,4 @@ mask_embedding_sentence_template: '*cls*_The_sentence_of_"*sent_0*"_means_*mask*
 mode: 'test'
 task_set: 'sts'
 mask_embedding_sentence_org_mlp: false
+strategy: "cot10#10"

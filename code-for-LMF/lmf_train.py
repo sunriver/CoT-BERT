@@ -394,6 +394,12 @@ class DataTrainingArguments:
         default=0.15, 
         metadata={"help": "Ratio of tokens to mask for MLM (only effective if --do_mlm)"}
     )
+
+    strategy: Optional[str] = field(
+        default=None, 
+        metadata={"help": "train strategy."}
+    )
+
     def __post_init__(self):
         if self.dataset_name is None and self.train_file is None and self.validation_file is None:
             raise ValueError("Need either a dataset name or a training/validation file.")
@@ -401,6 +407,7 @@ class DataTrainingArguments:
             extension = self.train_file.split(".")[-1]
             assert extension in ["csv", "json", "txt"], "`train_file` should be a csv, a json or a txt file."
 
+    
 
 @dataclass
 class OurTrainingArguments(TrainingArguments):
@@ -488,7 +495,7 @@ class OurTrainingArguments(TrainingArguments):
 from parse_args_util import load_configs
 from token_util import init_my_special_tokens
 # from token_util import prepare_train_features
-from strategy_manage import get_strategy
+from strategy_manage import set_strategy, get_strategy
 def main():
     # See all possible arguments in src/transformers/training_args.py
     # or by passing the --help flag to this script.
@@ -618,6 +625,8 @@ def main():
     
     # model.resize_token_embeddings(len(tokenizer))
     init_my_special_tokens(model, tokenizer)
+    set_strategy(data_args.strategy)
+
 
     # Prepare features
     column_names = datasets["train"].column_names

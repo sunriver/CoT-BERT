@@ -9,7 +9,7 @@ from prettytable import PrettyTable
 from transformers import AutoModel, AutoTokenizer, HfArgumentParser, AutoConfig
 from  parse_args_util import load_configs
 # from token_util import prepare_eval_features
-from strategy_manage import get_strategy
+from strategy_manage import set_strategy, get_strategy
 from lmf_model import BertForCL, evaluate
 
 # Set up logger
@@ -71,6 +71,7 @@ def main():
     parser.add_argument("--tokenizer_name", type=str, default='')
     parser.add_argument("--model_name_or_path", type=str, help="Transformers' model name or path")
     parser.add_argument('--mask_embedding_sentence_num_masks', type=int, default=2)
+    parser.add_argument("--strategy", type=str, default='')
     
     parser.add_argument("--pooler", type=str,
                         choices=['cls', 'cls_before_pooler', 'avg',  'avg_first_last'],
@@ -94,6 +95,8 @@ def main():
     args_list = load_configs(default_file="./configs/evaluation_default.yaml", custom_file=config_custom_file)
 
     args = parser.parse_args(args_list)
+
+    set_strategy(args.strategy)
 
  
 
