@@ -224,14 +224,16 @@ def cl_forward(cls,
             hidden_states=outputs.hidden_states,
         )
 
-    noise_input_ids, noise_attention_mask = get_noise_inputs(input_ids, attention_mask, sent_positions, pad_token_id=pad_token_id)
+    if get_strategy().is_denoised_enabled():
+        noise_input_ids, noise_attention_mask = get_noise_inputs(input_ids, attention_mask, sent_positions, pad_token_id=pad_token_id)
 
-    outputs, noise_mask_outputs = cl_get_mask_outputs(encoder, noise_input_ids, noise_attention_mask, mask_token_id=mask_token_id) # (batch_size * num_sent, mask_num, hidden_size)
+        outputs, noise_mask_outputs = cl_get_mask_outputs(encoder, noise_input_ids, noise_attention_mask, mask_token_id=mask_token_id) # (batch_size * num_sent, mask_num, hidden_size)
 
-    denoised_mask_outputs = mask_outputs - noise_mask_outputs
+        denoised_mask_outputs = mask_outputs - noise_mask_outputs
+    else:
+        denoised_mask_outputs = mask_outputs
 
     denoised_mask_outputs = cls.mlp(denoised_mask_outputs)
-
     denoised_mask_outputs = denoised_mask_outputs.view((batch_size, num_sent, -1, denoised_mask_outputs.size(-1))) # (batch_size, num_sent, mask_num, hidden_size)
 
     pos_pairs, neg_pairs = get_strategy().get_pos_neg_pairs(denoised_mask_outputs)

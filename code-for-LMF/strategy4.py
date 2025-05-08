@@ -2,16 +2,16 @@
 
 from strategy import Strategy
 
-class Strategy3(Strategy):
+class Strategy4(Strategy):
 
     @staticmethod
     def prepare_train_features(tokenizer, sentences):
         sent_features = {'input_ids': [], 'sent_positions': []}
-        bs = tokenizer.encode("Let's think the sentence's meaning of '")[:-1]
-        bs_neg = tokenizer.encode("Let's think the sentence's meaning : '")[:-1]
-        es_pos = tokenizer.encode("' step by step, it means [MASK], does not mean [MASK].")[1:]
+        bs = tokenizer.encode("Let's think the sentence of '")[:-1]
+        bs_neg = tokenizer.encode("Let's think the sentence : '")[:-1]
+        es_pos = tokenizer.encode("' step by step, it does mean [MASK], does not mean [MASK].")[1:]
         # es_pos = tokenizer.encode('" means [MASK], so it can be summarized as [MASK].')[1:]
-        es_neg = tokenizer.encode("' step by step, it means [MASK], does not mean [MASK].")[1:]
+        es_neg = tokenizer.encode("' step by step, it does not mean [MASK], does mean [MASK].")[1:]
         # es_neg = tokenizer.encode("' means [MASK], but doesn't mean [MASK].")[1:]
         # es_neg = tokenizer.encode('" does not mean [MASK], and it also does not mean [MASK].')[1:]
         for i, sent in enumerate(sentences):
@@ -26,10 +26,10 @@ class Strategy3(Strategy):
     @staticmethod
     def prepare_eval_features(tokenizer, sentences):
             sent_features = {'input_ids': [], 'sent_positions': []}
-            bs = tokenizer.encode("Let's think the sentence's meaning of '")[:-1]
+            bs = tokenizer.encode("Let's think the sentence of '")[:-1]
             # es_pos = tokenizer.encode('" not only implies [MASK] but also suggests [MASK].')[:-1]
             # es_pos = tokenizer.encode("' means [MASK], and also means [MASK].")[1:]
-            es_pos = tokenizer.encode("' step by step , it means [MASK].")[1:]
+            es_pos = tokenizer.encode("' step by step , it does mean [MASK].")[1:]
             # es_pos = tokenizer.encode('" means [MASK], so it can be summarized as [MASK].')[1:]
             for i, sent in enumerate(sentences):
                 if sent is None:
@@ -44,9 +44,9 @@ class Strategy3(Strategy):
     @staticmethod
     def get_pos_neg_pairs(denoised_mask_outputs):
         pos_mask1_vec = denoised_mask_outputs[:, 0, 0]
-        pos_mask2_vec = denoised_mask_outputs[:, 1, 0]
+        pos_mask2_vec = denoised_mask_outputs[:, 1, 1]
         neg_mask1_vec = denoised_mask_outputs[:, 0, 1]
-        neg_mask2_vec = denoised_mask_outputs[:, 1, 1]
+        neg_mask2_vec = denoised_mask_outputs[:, 1, 0]
 
         pos_pairs = [(pos_mask1_vec, pos_mask2_vec)]
         neg_pairs = [

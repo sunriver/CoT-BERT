@@ -2,7 +2,7 @@
 
 from strategy import Strategy
 
-class Strategy3(Strategy):
+class Strategy3c1(Strategy):
 
     @staticmethod
     def prepare_train_features(tokenizer, sentences):
@@ -69,3 +69,6 @@ class Strategy3(Strategy):
         return pos_mask_output_pooler
 
 
+    @staticmethod
+    def is_denoised_enabled():
+        return False

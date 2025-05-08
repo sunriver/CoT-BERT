@@ -21,3 +21,7 @@ class Strategy:
     @staticmethod
     def get_sent_output(denoised_mask_outputs):
         pass
+
+    @staticmethod
+    def is_denoised_enabled():
+        return  True
