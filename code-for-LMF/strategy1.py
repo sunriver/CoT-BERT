@@ -24,12 +24,12 @@ class Strategy1(Strategy):
         return sent_features
 
     @staticmethod
-    def prepare_eval_features(tokenizer, sentences):
+    def prepare_eval_features0(tokenizer, sentences):
             sent_features = {'input_ids': [], 'sent_positions': []}
             bs = tokenizer.encode("Let's think step by step, the sentence of '")[:-1]
             # es_pos = tokenizer.encode('" not only implies [MASK] but also suggests [MASK].')[:-1]
             # es_pos = tokenizer.encode("' means [MASK], and also means [MASK].")[1:]
-            es_pos = tokenizer.encode("' means [MASK].")[1:]
+            es_pos = tokenizer.encode("' means [MASK], but doesn't mean [MASK].")[1:]
             # es_pos = tokenizer.encode('" means [MASK], so it can be summarized as [MASK].')[1:]
             for i, sent in enumerate(sentences):
                 if sent is None:
@@ -39,6 +39,10 @@ class Strategy1(Strategy):
                 sent_positions = ((len(bs), len(bs+s)),)
                 sent_features['sent_positions'].append(sent_positions)
             return sent_features
+    
+    @staticmethod
+    def prepare_eval_features(tokenizer, sentences):
+        return Strategy1.prepare_train_features(tokenizer, sentences)
 
 
     @staticmethod
@@ -60,12 +64,32 @@ class Strategy1(Strategy):
         
         return pos_pairs, neg_pairs
 
+    
     @staticmethod
     def get_sent_output(denoised_mask_outputs):
+        pos_mask1_vec = denoised_mask_outputs[:, 0, 0]
+        pos_mask2_vec = denoised_mask_outputs[:, 1, 0]
+        pos_mask_vec = (pos_mask1_vec + pos_mask2_vec) / 2
+        pos_mask_output_pooler = pos_mask_vec
+        return pos_mask_output_pooler
+
+
+    @staticmethod
+    def get_sent_output0(denoised_mask_outputs):
+        pos_mask_output_pooler = denoised_mask_outputs[:,0,:,:].squeeze(1) 
+        # pos_mask_output_pooler, _ = pos_mask_output_pooler.max(dim = 1)
+        # pos_mask_output_pooler= pos_mask_output_pooler.sum(dim = 1)
+        pos_mask_output_pooler= pos_mask_output_pooler.mean(dim = 1)
+        # pos_mask_output_pooler = pos_mask_output_pooler[:, 0, :]
+        return pos_mask_output_pooler
+    
+    @staticmethod
+    def get_sent_output1(denoised_mask_outputs):
         pos_mask_output_pooler = denoised_mask_outputs[:,0,:,:].squeeze(1) 
         # pos_mask_output_pooler, _ = pos_mask_output_pooler.max(dim = 1)
         # pos_mask_output_pooler= pos_mask_output_pooler.sum(dim = 1)
         # pos_mask_output_pooler= pos_mask_output_pooler.mean(dim = 1)
+        pos_mask_output_pooler = pos_mask_output_pooler[:, 0, :]
         return pos_mask_output_pooler
 
 

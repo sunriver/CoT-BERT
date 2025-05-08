@@ -160,12 +160,14 @@ def evaluate(encoder, input_ids, attention_mask, sent_positions, mask_token_id, 
 
     # noised_outputs, noise_mask_outputs = get_denoised_mask_outputs(encoder=encoder,input_ids=input_ids, mask_outputs=mask_outputs, sent_positions=sent_positions, mask_token_id=mask_token_id, pad_token_id=pad_token_id)
    
-    noise_input_ids, noise_attention_mask = get_noise_inputs(input_ids, attention_mask, sent_positions, pad_token_id)
+    # noise_input_ids, noise_attention_mask = get_noise_inputs(input_ids, attention_mask, sent_positions, pad_token_id)
 
-    outputs, noise_mask_outputs = cl_get_mask_outputs(encoder, noise_input_ids, noise_attention_mask, mask_token_id) # (batch_size * num_sent, mask_num, hidden_size)
+    # outputs, noise_mask_outputs = cl_get_mask_outputs(encoder, noise_input_ids, noise_attention_mask, mask_token_id) # (batch_size * num_sent, mask_num, hidden_size)
 
 
-    denoised_mask_outputs = mask_outputs - noise_mask_outputs
+    # denoised_mask_outputs = mask_outputs - noise_mask_outputs
+
+    denoised_mask_outputs = mask_outputs
 
     denoised_mask_outputs = denoised_mask_outputs.view((batch_size, num_sent, -1, denoised_mask_outputs.size(-1))) # (batch_size, num_sent, mask_num, hidden_size)
     
@@ -211,8 +213,17 @@ def cl_forward(cls,
 
     outputs, mask_outputs = cl_get_mask_outputs(encoder, input_ids, attention_mask, mask_token_id=mask_token_id) # (batch_size * num_sent, mask_num, hidden_size)
 
-    # noised_outputs, noise_mask_outputs = get_denoised_mask_outputs(encoder=encoder,input_ids=input_ids, attention_mask=attention_mask, sent_positions=sent_positions, mask_token_id=mask_token_id, pad_token_id=pad_token_id)
-   
+    if sent_emb:
+        denoised_mask_outputs = mask_outputs
+        denoised_mask_outputs = denoised_mask_outputs.view((batch_size, num_sent, -1, denoised_mask_outputs.size(-1))) # (batch_size, num_sent, mask_num, hidden_size)
+        pos_mask_output_pooler = get_strategy().get_sent_output(denoised_mask_outputs)
+
+        return BaseModelOutputWithPoolingAndCrossAttentions(
+            pooler_output=pos_mask_output_pooler,
+            last_hidden_state=outputs.last_hidden_state,
+            hidden_states=outputs.hidden_states,
+        )
+
     noise_input_ids, noise_attention_mask = get_noise_inputs(input_ids, attention_mask, sent_positions, pad_token_id=pad_token_id)
 
     outputs, noise_mask_outputs = cl_get_mask_outputs(encoder, noise_input_ids, noise_attention_mask, mask_token_id=mask_token_id) # (batch_size * num_sent, mask_num, hidden_size)
@@ -222,22 +233,6 @@ def cl_forward(cls,
     denoised_mask_outputs = cls.mlp(denoised_mask_outputs)
 
     denoised_mask_outputs = denoised_mask_outputs.view((batch_size, num_sent, -1, denoised_mask_outputs.size(-1))) # (batch_size, num_sent, mask_num, hidden_size)
-    if sent_emb:
-        # pos_mask_output_pooler = denoised_mask_outputs[:,0,:,:].squeeze(1) 
-        # pos_mask_output_pooler, _ = pos_mask_output_pooler.max(dim = 1)
-        # pos_mask_output_pooler= pos_mask_output_pooler.sum(dim = 1)
-        # pos_mask_output_pooler= pos_mask_output_pooler.mean(dim = 1)
-        pos_mask_output_pooler = get_strategy().get_sent_output(denoised_mask_outputs)
-
-        return BaseModelOutputWithPoolingAndCrossAttentions(
-            pooler_output=pos_mask_output_pooler,
-            last_hidden_state=outputs.last_hidden_state,
-            hidden_states=outputs.hidden_states,
-        )
-        # return pos_mask_output_pooler
-
-    # outputs = denoised_mask_outputs[:, 0].mean(dim=1)  # (batch_size, hidden_size)  
-
 
     pos_pairs, neg_pairs = get_strategy().get_pos_neg_pairs(denoised_mask_outputs)
     # 计算正样本对的相似度（余弦相似度）
