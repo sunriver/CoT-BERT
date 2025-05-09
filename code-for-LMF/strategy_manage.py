@@ -18,4 +18,4 @@ def get_strategy():
     #     return Strategy1
     # if strategy_name == "cot10#10$11":
     #         return Strategy1
-    return Strategy3c1
+    return Strategy3
