@@ -50,7 +50,7 @@ class Strategy3c2c1(Strategy):
         pos_pairs = [(pos_mask1_vec, pos_mask2_vec)]
         neg_pairs = [
             (pos_mask1_vec, neg_mask1_vec),
-            (pos_mask1_vec, neg_mask1_vec),
+            (pos_mask2_vec, neg_mask1_vec),
             # (neg_mask2_vec, neg_mask2_vec)
         ]
         
