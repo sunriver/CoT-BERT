@@ -259,7 +259,7 @@ class CLTrainer(Trainer):
             if self.is_world_process_zero():
                 self._rotate_checkpoints(use_mtime=True)
     
-    def train(self, model_path: Optional[str] = None, trial: Union["optuna.Trial", Dict[str, Any]] = None):
+    def train(self, model_path: Optional[str] = None, trial: Union["optuna.Trial", Dict[str, Any]] = None, train_name: Optional[str] = "train"):
         """
         Main training entry point.
 
@@ -423,7 +423,9 @@ class CLTrainer(Trainer):
         self.callback_handler.optimizer = self.optimizer
         self.callback_handler.lr_scheduler = self.lr_scheduler
         self.callback_handler.train_dataloader = train_dataloader
-        self.state.trial_name = self.hp_name(trial) if self.hp_name is not None else None
+
+        trial_name = self.hp_name(trial) if self.hp_name is not None else None
+        self.state.trial_name = f"{train_name}-{trial_name}" if trial_name is not None else train_name
         self.state.trial_params = hp_params(trial) if trial is not None else None
         
         # This should be the same if the state has been saved but in case the training arguments changed, it's safer

@@ -731,7 +731,8 @@ def main():
     if training_args.do_train:
         model_path = None
         torch.autograd.set_detect_anomaly(True)  # 开启异常检测
-        train_result = trainer.train(model_path=model_path)
+        train_strategy_name = get_strategy().__name__
+        train_result = trainer.train(model_path=model_path, train_name=train_strategy_name)
         trainer.save_model()  # Saves the tokenizer too for easy upload
 
         output_train_file = os.path.join(training_args.output_dir, "train_results.txt")

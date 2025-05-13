@@ -7,6 +7,7 @@ from strategy3 import Strategy3
 from strategy3c import Strategy3c
 from strategy3c1 import Strategy3c1
 from strategy3c2 import Strategy3c2
+from strategy3c2c1 import Strategy3c2c1
 from strategy3c3 import Strategy3c3
 
 from importlib import import_module
@@ -28,4 +29,4 @@ def get_strategy():
     #     return Strategy1
     # if strategy_name == "cot10#10$11":
     #         return Strategy1
-    return Strategy3c3
+    return Strategy3c2c1
