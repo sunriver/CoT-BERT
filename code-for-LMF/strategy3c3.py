@@ -2,7 +2,7 @@
 
 from strategy import Strategy
 
-class Strategy3(Strategy):
+class Strategy3c3(Strategy):
 
     @staticmethod
     def prepare_train_features(tokenizer, sentences):
@@ -54,7 +54,7 @@ class Strategy3(Strategy):
             (pos_mask1_vec, neg_mask2_vec),
             (pos_mask2_vec, neg_mask1_vec),
             (pos_mask2_vec, neg_mask2_vec),
-            (neg_mask1_vec, neg_mask2_vec),
+            # (neg_mask1_vec, neg_mask2_vec),
             # (neg_mask2_vec, neg_mask2_vec)
         ]
         
