@@ -18,6 +18,9 @@ class Strategy3(Strategy):
             if sent is None:
                 sent = " "
             s = tokenizer.encode(sent, add_special_tokens=False)[:Strategy.max_seq_length]
+            # ratio = len(s) / len(bs + s + es_pos)
+            # if ratio < float(0.3):
+            #     s = s + s
             sent_features['input_ids'].append([bs + s + es_pos, bs_neg + s + es_neg])
             sent_positions = ((len(bs), len(bs+s)), (len(bs_neg), len(bs_neg + s)))
             sent_features['sent_positions'].append(sent_positions)
@@ -35,6 +38,9 @@ class Strategy3(Strategy):
                 if sent is None:
                     sent = " "
                 s = tokenizer.encode(sent, add_special_tokens=False)[:Strategy.max_seq_length]
+                # ratio = len(s) / len(bs + s + es_pos)
+                # if ratio < float(0.3):
+                #     s = s + s
                 sent_features['input_ids'].append([bs + s + es_pos])
                 sent_positions = ((len(bs), len(bs+s)),)
                 sent_features['sent_positions'].append(sent_positions)

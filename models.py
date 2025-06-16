@@ -6,6 +6,55 @@ from transformers.models.bert.modeling_bert import BertPreTrainedModel, BertMode
 from transformers.models.roberta.modeling_roberta import RobertaPreTrainedModel, RobertaModel
 from transformers.modeling_outputs import SequenceClassifierOutput, BaseModelOutputWithPoolingAndCrossAttentions
 
+import math
+
+class UniformCircleLoss(nn.Module):
+    def __init__(self, num_bins=10, temperature=1.0):
+        super().__init__()
+        self.num_bins = num_bins
+        self.temperature = temperature  # 控制分布平滑度
+
+
+    def compute_angles0(self, x):
+        # x: [batch_size, embedding_dim]
+        angles = torch.atan2(x[:, 1], x[:, 0]) % (2 * math.pi)  # [0, 2π)
+        return angles
+
+    def compute_angles(self, x):
+        # 输入：x [32,768] 高维向量
+        # 输出：angles [32] 圆周角度
+        
+        # 步骤1：高维向量归一化
+        x_normalized = x / x.norm(dim=1, keepdim=True)  # [32,768]
+        
+        # 步骤2：球面投影到二维平面
+        proj = self.stereographic_projection(x_normalized)  # [32,2]
+        
+        # 步骤3：计算极角（考虑环形特性）
+        angles = torch.atan2(proj[:, 1], proj[:, 0]) % (2 * math.pi)  # [0, 2π)
+        
+        return angles
+
+    def stereographic_projection(self, x):
+        # x: [batch_size, 768] (需预先归一化到单位球面)
+        # x = x / x.norm(dim=1, keepdim=True)  # 确保单位长度
+        scale = 2.0 / (1 + x.pow(2).sum(dim=1, keepdim=True).sqrt())
+        proj = x * scale  # [batch_size, 768]
+        return proj[:, :2]  # 取前两维作为二维坐标
+
+    def forward(self, x):
+        angles = self.compute_angles(x)
+        
+        # 角度分箱（考虑环形特性）
+        bin_edges = torch.linspace(0, 2*math.pi, steps=self.num_bins+1, device=x.device)
+        bin_indices = torch.bucketize(angles, bin_edges[1:-1])  # 避免包含端点
+        
+        # 计算卡方统计量
+        counts = torch.bincount(bin_indices, minlength=self.num_bins)
+        expected = torch.full_like(counts, x.shape[0] / self.num_bins)
+        chi_square = torch.sum((counts - expected) ** 2 / (expected + 1e-6))  # 防止除零
+        
+        return chi_square
 
 class MLPLayer(nn.Module):
     """
@@ -118,6 +167,10 @@ def cl_init(cls, config):
         cls.mlp = MLPLayer(config, scale=cls.model_args.mask_embedding_sentence_num_masks)
     
     cls.sim = Similarity(temp=cls.model_args.temp)
+
+    #均匀分布损失
+    cls.uniform_loss = UniformCircleLoss(num_bins=10)
+
     cls.init_weights()
 
 def cl_forward(cls,
@@ -331,7 +384,13 @@ def cl_forward(cls,
 
     #     cos_sim = cos_sim + weights1 + weights2
 
-    loss = loss_fct(cos_sim, labels)
+    loss1 = loss_fct(cos_sim, labels)
+
+    # 卡方损失（假设目标为均匀分布）
+    sent_embedings = z1
+    loss2 = cls.uniform_loss(sent_embedings)
+
+    loss = loss1 + 0.3 * loss2
 
     # Calculate loss for MLM
     # if not cls.model_args.add_pseudo_instances and mlm_outputs is not None and mlm_labels is not None:

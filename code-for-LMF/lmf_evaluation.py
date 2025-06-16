@@ -143,9 +143,14 @@ def main():
             remove_set = {".", "a", "the", "in", ",", "is", "to", "of", "and", "'", "on", "man", "-", "s", "with", "for", "\"", "at", "##s", "woman", "are", "it", "two", "that", "you", "dog", "said", "playing", "i", "an", "as", "was", "from", ":", "by", "white"}
 
 
-
+    statics_len = {}
     def batcher(params, batch, max_length=None):
             sentences = [' '.join(s) for s in batch]
+            curr_task = params['current_task']
+            sents_lens = [len(s) for s in batch]
+            avg_len = np.mean(sents_lens)
+            statics_len[curr_task] = statics_len[curr_task] if curr_task in statics_len else []
+            statics_len[curr_task].append(avg_len)
 
             special_keys = ['input_ids', 'attention_mask', 'token_type_ids', 'sent_positions']
         
@@ -184,12 +189,17 @@ def main():
             return pooler_output.cpu()
 
 
-   
+    from visual.statics_util import save_results
+
     results = {}
     for task in args.tasks:
         se = senteval.engine.SE(params, batcher, prepare)
         result = se.eval(task)
+        if task == 'STSBenchmark':
+            save_results(result['test'], f"STSBenchmark_test_result_{strategy}.json")
         results[task] = result
+
+
 
     # Print evaluation results
     if args.mode == 'dev':
@@ -224,6 +234,8 @@ def main():
         task_names = []
         for task in ['STS12', 'STS13', 'STS14', 'STS15', 'STS16', 'STSBenchmark', 'SICKRelatedness']:
             task_names.append(task)
+            print(task, "text avg len:")
+            print(task, np.mean(statics_len[task]))
             if task in results:
                 if task in ['STS12', 'STS13', 'STS14', 'STS15', 'STS16']:
                     scores.append("%.2f" % (results[task]['all']['spearman']['all'] * 100))

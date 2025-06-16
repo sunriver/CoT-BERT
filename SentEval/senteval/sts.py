@@ -79,7 +79,10 @@ class STSEval(object):
             all_gs_scores.extend(gs_scores)
             results[dataset] = {'pearson': pearsonr(sys_scores, gs_scores),
                                 'spearman': spearmanr(sys_scores, gs_scores),
-                                'nsamples': len(sys_scores)}
+                                'nsamples': len(sys_scores),
+                                'sys_scores': sys_scores,
+                                'gs_scores': gs_scores,
+                                }
             logging.debug('%s : pearson = %.4f, spearman = %.4f' %
                           (dataset, results[dataset]['pearson'][0],
                            results[dataset]['spearman'][0]))
@@ -95,20 +98,22 @@ class STSEval(object):
         wavg_pearson = np.average(list_prs, weights=weights)
         wavg_spearman = np.average(list_spr, weights=weights)
         all_pearson = pearsonr(all_sys_scores, all_gs_scores)
-        all_spearman = spearmanr(all_sys_scores, all_gs_scores)
+        all_spearman = spearmanr(all_sys_scores, all_gs_scores)    
         results['all'] = {'pearson': {'all': all_pearson[0],
                                       'mean': avg_pearson,
                                       'wmean': wavg_pearson},
                           'spearman': {'all': all_spearman[0],
                                        'mean': avg_spearman,
-                                       'wmean': wavg_spearman}}
+                                       'wmean': wavg_spearman},
+                           'all_sys_scores': all_sys_scores,
+                           'all_gs_scores': all_gs_scores
+                        }
         logging.debug('ALL : Pearson = %.4f, \
             Spearman = %.4f' % (all_pearson[0], all_spearman[0]))
         logging.debug('ALL (weighted average) : Pearson = %.4f, \
             Spearman = %.4f' % (wavg_pearson, wavg_spearman))
         logging.debug('ALL (average) : Pearson = %.4f, \
             Spearman = %.4f\n' % (avg_pearson, avg_spearman))
-
         return results
 
 
@@ -167,6 +172,10 @@ class STSBenchmarkEval(STSEval):
         test = self.loadFile(os.path.join(task_path, 'sts-test.csv'))
         self.datasets = ['train', 'dev', 'test']
         self.data = {'train': train, 'dev': dev, 'test': test}
+
+        # test = self.loadFile(os.path.join(task_path, 'sts-test.csv'))
+        # self.datasets = ['test']
+        # self.data = {'test': test}
 
     def loadFile(self, fpath):
         sick_data = {'X_A': [], 'X_B': [], 'y': []}
