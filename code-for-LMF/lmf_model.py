@@ -9,108 +9,105 @@ from transformers.modeling_outputs import SequenceClassifierOutput, BaseModelOut
 
 import math
 
+import torch.nn.functional as F
+from sklearn.neighbors import KernelDensity
+import numpy as np
 
-class UniformCircleLoss(nn.Module):
+import math
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+class UniformCircleLoss0(nn.Module):
     def __init__(self, num_bins=10, temperature=1.0):
         super().__init__()
         self.num_bins = num_bins
-        self.temperature = temperature  # 控制分布平滑度
-
-
-    def compute_angles0(self, x):
-        # x: [batch_size, embedding_dim]
-        angles = torch.atan2(x[:, 1], x[:, 0]) % (2 * math.pi)  # [0, 2π)
-        return angles
-
-    def compute_angles(self, x):
-        # 输入：x [32,768] 高维向量
-        # 输出：angles [32] 圆周角度
-        
-        # 步骤1：高维向量归一化
-        x_normalized = x / x.norm(dim=1, keepdim=True)  # [32,768]
-        
-        # 步骤2：球面投影到二维平面
-        proj = self.stereographic_projection(x_normalized)  # [32,2]
-        
-        # 步骤3：计算极角（考虑环形特性）
-        angles = torch.atan2(proj[:, 1], proj[:, 0]) % (2 * math.pi)  # [0, 2π)
-        
-        return angles
+        self.temperature = temperature
 
     def stereographic_projection(self, x):
-        # x: [batch_size, 768] (需预先归一化到单位球面)
-        # x = x / x.norm(dim=1, keepdim=True)  # 确保单位长度
+        """修复：返回二维坐标 [batch_size, 2]"""
         scale = 2.0 / (1 + x.pow(2).sum(dim=1, keepdim=True).sqrt())
         proj = x * scale  # [batch_size, 768]
-        return proj[:, :2]  # 取前两维作为二维坐标
+        return proj[:, :2]  # 修复：截取前两维 [batch_size, 2]
+
+    def compute_angles(self, x):
+        """修复：确保 angles 形状为 [batch_size]"""
+        x_proj = self.stereographic_projection(x)  # [batch_size, 2]
+        angles = torch.atan2(x_proj[:, 1], x_proj[:, 0]) % (2 * math.pi)  # [batch_size]
+        return angles
+
+    def forward(self, x):
+        angles = self.compute_angles(x)  # [batch_size]
+
+        # 生成分箱边界
+        bin_edges = torch.linspace(0, 2*math.pi, steps=self.num_bins+1, device=x.device)  # [num_bins+1]
+        
+        # 修复：确保维度匹配
+        angles = angles.unsqueeze(1)  # [batch_size, 1]
+        bin_edges = bin_edges.unsqueeze(0)  # [1, num_bins+1]
+        
+        # 计算环形距离
+        dists = torch.fmod(angles - bin_edges + math.pi, 2*math.pi) - math.pi  # [batch_size, num_bins+1]
+        
+        # 计算概率分布
+        logits = -dists
+        probs = F.softmax(logits / self.temperature, dim=1)  # [batch_size, num_bins+1]
+        
+        # 合并首尾 bin（环形特性）
+        probs = torch.cat([probs[:, 1:], probs[:, :1]], dim=1)  # 可选
+        
+        return probs
+
+import math
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class UniformCircleLoss(nn.Module):
+    def __init__(self, num_bins=10, temperature=1.0, loss_type='kl'):
+        super().__init__()
+        self.num_bins = num_bins
+        self.temperature = temperature
+        self.loss_type = loss_type  # 'kl', 'entropy', 'variance'
+
+    def stereographic_projection(self, x):
+        scale = 2.0 / (1 + x.pow(2).sum(dim=1, keepdim=True).sqrt())
+        proj = x * scale
+        return proj[:, :2]
+
+    def compute_angles(self, x):
+        x_proj = self.stereographic_projection(x)
+        angles = torch.atan2(x_proj[:, 1], x_proj[:, 0]) % (2 * math.pi)
+        return angles
+
+    def _compute_soft_bins(self, angles, bin_edges):
+        angles = angles.unsqueeze(1)
+        bin_edges = bin_edges.unsqueeze(0)
+        dists = torch.fmod(angles - bin_edges + math.pi, 2*math.pi) - math.pi
+        logits = -dists
+        probs = F.softmax(logits / self.temperature, dim=1)
+        return probs
 
     def forward(self, x):
         angles = self.compute_angles(x)
-        
-        # 角度分箱（考虑环形特性）
         bin_edges = torch.linspace(0, 2*math.pi, steps=self.num_bins+1, device=x.device)
-        bin_indices = torch.bucketize(angles, bin_edges[1:-1])  # 避免包含端点
-        
-        # 计算卡方统计量
-        counts = torch.bincount(bin_indices, minlength=self.num_bins)
-        expected = torch.full_like(counts, x.shape[0] / self.num_bins)
-        chi_square = torch.sum((counts - expected) ** 2 / (expected + 1e-6))  # 防止除零
-        
-        return chi_square
+        bin_probs = self._compute_soft_bins(angles, bin_edges)
 
 
-class HistogramDiscretizer(nn.Module):
-    def __init__(self, bins=10, dim=-1):
-        super().__init__()
-        self.bins = bins
-        self.dim = dim
+        self.loss_type = 'kl'
 
-    def forward(self, embeddings):
-        # 将嵌入向量按维度分箱（假设embeddings形状为 [batch_size, embedding_dim]）
-        min_vals = embeddings.amin(dim=self.dim, keepdim=True)
-        max_vals = embeddings.amax(dim=self.dim, keepdim=True)
-        bins = torch.linspace(min_vals, max_vals, steps=self.bins + 1, device=embeddings.device)
-        digitized = torch.bucketize(embeddings, bins[1:-1])  # 分箱结果
-        return digitized
-
-class ChiSquareLoss(nn.Module):
-    def __init__(self, bins=10, eps=1e-8):
-        super().__init__()
-        self.bins = bins
-        self.eps = eps
-        self.discretizer = HistogramDiscretizer(bins=self.bins)
-
-    def forward(self, embeddings, target_distribution="uniform"):
-        """
-        Args:
-            embeddings: 句子嵌入，形状 [batch_size, embedding_dim]
-            target_distribution: 目标分布类型（"uniform" 或自定义频数）
-        Returns:
-            卡方损失值
-        """
-        batch_size = embeddings.shape[0]
-        
-        # 离散化嵌入向量
-        # discretizer = HistogramDiscretizer(bins=self.bins)
-        digitized = self.discretizer(embeddings)  # [batch_size, embedding_dim]
-
-        # 统计观察频数
-        observed = torch.zeros(batch_size, self.bins)
-        for i in range(batch_size):
-            unique, counts = torch.unique(digitized[i], return_counts=True)
-            observed[i, unique] = counts.float()
-
-        # 计算期望频数
-        if target_distribution == "uniform":
-            expected = torch.full_like(observed, batch_size / self.bins)
+        if self.loss_type == 'kl':
+            uniform_dist = torch.ones_like(bin_probs) / self.num_bins
+            loss = F.kl_div(bin_probs.log(), uniform_dist, reduction='batchmean')
+        elif self.loss_type == 'entropy':
+            entropy = -torch.sum(bin_probs * torch.log(bin_probs + 1e-8), dim=-1)
+            loss = entropy.mean()
+        elif self.loss_type == 'variance':
+            mean_prob = bin_probs.mean(dim=-1)
+            loss = torch.var(mean_prob)
         else:
-            # 自定义目标分布（需与observed形状一致）
-            expected = target_distribution.to(embeddings.device)
-
-        # 计算卡方损失
-        chi2 = torch.sum((observed - expected) ** 2 / (expected + self.eps), dim=-1)
-        return torch.mean(chi2)
-
+            raise ValueError(f"Unknown loss type: {self.loss_type}")
+        
+        return loss
 class MLPLayer(nn.Module):
     """
     Head for getting sentence representations over RoBERTa/BERT's CLS representation.
@@ -334,9 +331,10 @@ def cl_forward(cls,
     loss2 = cls.uniform_loss(sent_embedings)
 
      # 总损失
-    loss = ce_loss + 0.1 * loss2
+    loss = ce_loss + 0.5 * loss2
 
     # loss = ce_loss
+    # loss = loss2
 
 
     # print(f"Current loss: {loss.item()}")  # 监控损失值
@@ -360,7 +358,8 @@ class BertForCL(BertPreTrainedModel):
         self.bert = BertModel(config)
         self.total_length = 80
         # self.chi_square_loss = ChiSquareLoss(bins=10)
-        self.uniform_loss = UniformCircleLoss(num_bins=10)
+        self.uniform_loss = UniformCircleLoss(num_bins=4)
+        # self.uniform_loss = DirectionEntropyLoss(alpha=0.1)
         cl_init(self, config)
     
 
