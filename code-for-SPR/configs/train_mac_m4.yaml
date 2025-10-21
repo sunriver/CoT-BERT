@@ -1,0 +1,26 @@
+# Mac M4 调试配置
+model_name_or_path: "/Users/lmf/Documents/local/code/pretrain_models/bert-base-uncased"
+train_file: "../data/wiki1m_for_simcse.txt"
+output_dir: "../result/SPR-BERT"
+num_train_epochs: 1
+per_device_train_batch_size: 8  # 减小批次大小用于调试
+gradient_accumulation_steps: 8  # 增加梯度累积保持有效批次大小
+learning_rate: 1e-5
+max_seq_length: 32
+evaluation_strategy: no
+save_steps: 50  # 更频繁保存用于调试
+overwrite_output_dir: true
+do_train: true
+fp16: false  # Mac M4不支持fp16
+preprocessing_num_workers: 4  # 减少工作进程
+use_mps_device: true  # 启用MPS设备
+dataloader_drop_last: true
+seed: 0
+
+# SPR specific arguments
+prompt_template: 'The sentence of "[X]" means [MASK], and also means [MASK].'
+mask_num: 2
+spr_denoising: true
+
+# Mac M4 特定设置
+# device, no_cuda, use_cpu 参数由平台工具自动处理

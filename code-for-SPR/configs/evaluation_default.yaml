@@ -1,0 +1,7 @@
+model_name_or_path: "../result/SPR-BERT"
+mode: test
+task_set: sts
+prompt_template: 'The sentence of "[X]" means [MASK], and also means [MASK].'
+mask_num: 2
+spr_denoising: true
+pooler: cls
