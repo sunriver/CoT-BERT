@@ -1,0 +1,47 @@
+# CoT-BERT SPR项目 Linux CUDA环境依赖
+# 适用于Linux CUDA机器部署
+
+# 核心深度学习框架
+torch>=1.13.1
+torchvision>=0.14.1
+torchaudio>=0.13.1
+
+# Hugging Face生态系统
+transformers>=4.20.0
+datasets>=2.0.0
+tokenizers>=0.13.0
+accelerate>=0.20.0
+
+# 数据处理和科学计算
+numpy>=1.21.0
+scipy>=1.9.0
+pandas>=1.5.0
+scikit-learn>=1.1.0
+
+# 配置和工具
+pyyaml>=6.0
+packaging>=21.0
+setuptools>=60.0.0
+dill>=0.3.4
+
+# 可视化和界面
+prettytable>=3.0.0
+gradio>=3.35.2
+tqdm>=4.64.0
+
+# 日志和调试
+colorlog>=6.7.0
+
+# CUDA相关（如果需要）
+# nvidia-ml-py3>=7.352.0  # NVIDIA GPU监控（可选）
+
+# 其他依赖
+requests>=2.28.0
+urllib3>=1.26.0
+filelock>=3.8.0
+huggingface-hub>=0.15.0
+
+# 开发和测试工具（可选）
+# pytest>=7.0.0
+# black>=22.0.0
+# flake8>=5.0.0
