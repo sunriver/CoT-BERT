@@ -254,6 +254,48 @@ class OurTrainingArguments(TrainingArguments):
 
 
 from parse_args_util import load_configs
+
+def prepare_features(examples, model_args, data_args, tokenizer):
+    # padding = longest (default)
+    #   If no sentence in the batch exceed the max length, then use
+    #   the max sentence length in the batch, otherwise use the 
+    #   max sentence length in the argument and truncate those that
+    #   exceed the max length.
+
+    # padding = max_length (when pad_to_max_length, for pressure test)
+    #   All sentences are padded/truncated to data_args.max_seq_length.
+    total = len(examples['text'])
+
+    # Avoid "None" fields
+    for idx in range(total):
+        if examples['text'][idx] is None:
+            examples['text'][idx] = " "
+
+    sentences = examples['text'] + examples['text']  # For unsupervised learning, use the same sentence
+
+    # Apply SPR prompt template
+    bs = tokenizer.encode(model_args.prompt_template.split('[')[0].strip())[:-1]  # Remove last token
+    es = tokenizer.encode(model_args.prompt_template.split(']')[1].strip())[1:]   # Remove first token
+
+    sent_features = {'input_ids': [], 'attention_mask': []}
+
+    for i, s in enumerate(sentences):
+        s = tokenizer.encode(s, add_special_tokens=False)[:data_args.max_seq_length]
+        sent_features['input_ids'].append(bs + s + es)
+    
+    ml = max(len(i) for i in sent_features['input_ids'])
+
+    for i in range(len(sent_features['input_ids'])):
+        t = sent_features['input_ids'][i]
+        sent_features['input_ids'][i] = t + [tokenizer.pad_token_id] * (ml - len(t))
+        sent_features['attention_mask'].append(len(t) * [1] + (ml - len(t)) * [0])
+
+    features = {}
+    for key in sent_features:
+        features[key] = [[sent_features[key][i], sent_features[key][i + total]] for i in range(total)]
+
+    return features
+
 def main():
     # See all possible arguments in src/transformers/training_args.py
     # or by passing the --help flag to this script.
@@ -273,23 +315,17 @@ def main():
     if platform_type == "mac_m4":
         # Mac M4: 使用MPS，禁用CUDA
         args_list.extend([
-            "--use_mps_device", "true",
-            "--no_cuda", "true",
-            "--use_cpu", "false"
+            "--no_cuda", "true"
         ])
     elif platform_type == "linux_cuda":
         # Linux CUDA: 使用CUDA，禁用MPS
         args_list.extend([
-            "--use_mps_device", "false", 
-            "--no_cuda", "false",
-            "--use_cpu", "false"
+            "--no_cuda", "false"
         ])
     else:
         # 其他平台: 使用CPU
         args_list.extend([
-            "--use_mps_device", "false",
-            "--no_cuda", "true", 
-            "--use_cpu", "true"
+            "--no_cuda", "true"
         ])
     
     model_args, data_args, training_args = parser.parse_args_into_dataclasses(args=args_list)
@@ -391,47 +427,6 @@ def main():
     sent0_cname = column_names[0]
     sent1_cname = column_names[0]  # For unsupervised learning, use the same sentence
 
-def prepare_features(examples, model_args, data_args, tokenizer):
-    # padding = longest (default)
-    #   If no sentence in the batch exceed the max length, then use
-    #   the max sentence length in the batch, otherwise use the 
-    #   max sentence length in the argument and truncate those that
-    #   exceed the max length.
-
-    # padding = max_length (when pad_to_max_length, for pressure test)
-    #   All sentences are padded/truncated to data_args.max_seq_length.
-    total = len(examples['text'])
-
-    # Avoid "None" fields
-    for idx in range(total):
-        if examples['text'][idx] is None:
-            examples['text'][idx] = " "
-
-    sentences = examples['text'] + examples['text']  # For unsupervised learning, use the same sentence
-
-    # Apply SPR prompt template
-    bs = tokenizer.encode(model_args.prompt_template.split('[')[0].strip())[:-1]  # Remove last token
-    es = tokenizer.encode(model_args.prompt_template.split(']')[1].strip())[1:]   # Remove first token
-
-    sent_features = {'input_ids': [], 'attention_mask': []}
-
-    for i, s in enumerate(sentences):
-        s = tokenizer.encode(s, add_special_tokens=False)[:data_args.max_seq_length]
-        sent_features['input_ids'].append(bs + s + es)
-    
-    ml = max(len(i) for i in sent_features['input_ids'])
-
-    for i in range(len(sent_features['input_ids'])):
-        t = sent_features['input_ids'][i]
-        sent_features['input_ids'][i] = t + [tokenizer.pad_token_id] * (ml - len(t))
-        sent_features['attention_mask'].append(len(t) * [1] + (ml - len(t)) * [0])
-
-    features = {}
-    for key in sent_features:
-        features[key] = [[sent_features[key][i], sent_features[key][i + total]] for i in range(total)]
-
-    return features
-
     if training_args.do_train:
         train_dataset = datasets["train"].map(
             lambda examples: prepare_features(examples, model_args, data_args, tokenizer),
@@ -453,6 +448,7 @@ def prepare_features(examples, model_args, data_args, tokenizer):
         def __call__(self, features: List[Dict[str, Union[List[int], List[List[int]], torch.Tensor]]]) -> Dict[str, torch.Tensor]:
             special_keys = ['input_ids', 'attention_mask', 'token_type_ids']
             bs = len(features)
+            print(f"OurDataCollatorWithPadding batchSize={bs}")
 
             if bs > 0:
                 num_sent = len(features[0]['input_ids'])

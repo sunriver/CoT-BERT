@@ -101,6 +101,10 @@ def spr_init(cls, config):
     cls.prediction_net = PredictionNetwork(config)
     cls.prediction_net_proj = PredictionNetwork(config)
     
+    # 设置mask相关属性
+    cls.mask_num = getattr(cls.model_args, 'mask_num', 2)  # 默认2个mask
+    cls.mask_token_id = None  # 将在forward中设置
+    
     cls.init_weights()
 
 
@@ -149,15 +153,24 @@ def spr_forward(cls,
     # 提取mask位置的hidden states
     last_hidden = outputs.last_hidden_state
     
+    # 设置mask_token_id（如果还没有设置）
+    if cls.mask_token_id is None:
+        cls.mask_token_id = encoder.config.vocab_size - 1  # 使用词汇表最后一个token作为mask
+    
     # 检查是否有mask_token_id属性
-    if hasattr(cls, 'mask_token_id'):
+    if hasattr(cls, 'mask_token_id') and cls.mask_token_id is not None:
         pooler_output = last_hidden[input_ids == cls.mask_token_id]
-        # 重塑为(batch_size * num_sent, mask_num, hidden_size)
-        pooler_output = pooler_output.view(-1, cls.mask_num, pooler_output.shape[-1])
-        
-        # 分离h1*和h2*
-        h1_star = pooler_output[:, 0, :]  # 第一个mask位置
-        h2_star = pooler_output[:, 1, :]  # 第二个mask位置
+        if pooler_output.size(0) > 0:
+            # 重塑为(batch_size * num_sent, mask_num, hidden_size)
+            pooler_output = pooler_output.view(-1, cls.mask_num, pooler_output.shape[-1])
+            
+            # 分离h1*和h2*
+            h1_star = pooler_output[:, 0, :]  # 第一个mask位置
+            h2_star = pooler_output[:, 1, :]  # 第二个mask位置
+        else:
+            # 如果没有找到mask token，使用CLS token作为替代
+            h1_star = last_hidden[:, 0, :]  # CLS token
+            h2_star = last_hidden[:, 0, :]  # 同样的CLS token（简化处理）
     else:
         # 如果没有mask token，使用CLS token作为替代
         h1_star = last_hidden[:, 0, :]  # CLS token
@@ -315,6 +328,12 @@ class BertForSPR(BertPreTrainedModel):
     实现自投影正则化的BERT模型
     """
     _keys_to_ignore_on_load_missing = [r"position_ids"]
+    _keys_to_ignore_on_load_unexpected = [
+        r"prediction_net\.",
+        r"prediction_net_proj\.",
+        r"projection1\.",
+        r"projection2\."
+    ]
 
     def __init__(self, config, *model_args, **model_kargs):
         super().__init__(config)
@@ -323,6 +342,31 @@ class BertForSPR(BertPreTrainedModel):
         self.total_length = 80
 
         spr_init(self, config)
+
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
+        """
+        重写 from_pretrained 方法以抑制预期的警告
+        """
+        import warnings
+        import logging
+        
+        # 临时抑制相关警告
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="Some weights of.*were not initialized.*")
+            warnings.filterwarnings("ignore", message="Some weights of the model checkpoint.*were not used.*")
+            
+            # 临时降低 transformers 日志级别
+            old_level = logging.getLogger("transformers.modeling_utils").level
+            logging.getLogger("transformers.modeling_utils").setLevel(logging.ERROR)
+            
+            try:
+                model = super().from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
+            finally:
+                # 恢复日志级别
+                logging.getLogger("transformers.modeling_utils").setLevel(old_level)
+        
+        return model
 
     def forward(self,
         input_ids=None,

@@ -6,7 +6,7 @@ echo "Mac M4 平台 SPR 模型调试训练"
 echo "=========================================="
 
 # 激活虚拟环境
-source ../myvenv3.8/bin/activate
+source ../.venv/bin/activate
 
 # 设置环境变量
 export PYTHONPATH="${PYTHONPATH}:.."
