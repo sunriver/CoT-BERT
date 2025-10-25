@@ -1,0 +1,22 @@
+model_name_or_path: "/Users/lmf/Documents/local/code/pretrain_models/bert-base-uncased"
+train_file: "../data/wiki1m_for_simcse.txt"
+output_dir: "../result/PrismDecomp-BERT"
+num_train_epochs: 1
+per_device_train_batch_size: 64
+gradient_accumulation_steps: 2
+learning_rate: 1e-5
+max_seq_length: 32
+evaluation_strategy: no
+save_steps: 125
+overwrite_output_dir: true
+do_train: true
+fp16: true
+preprocessing_num_workers: 10
+use_mps_device: false
+dataloader_drop_last: true
+seed: 0
+
+# PrismDecomp specific arguments
+num_semantics: 7
+orthogonal_constraint: true
+semantic_weights_learnable: true
