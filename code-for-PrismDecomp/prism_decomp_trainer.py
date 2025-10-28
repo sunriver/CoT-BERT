@@ -89,19 +89,50 @@ class PrismDecompTrainer(Trainer):
             return
 
         def batcher(params, batch):
+            """
+            SentEval batcher函数
+            batch: 单个任务的一批句子
+            对于STS任务，SentEval会分别传两批句子（batch1和batch2）
+            每批都单独处理，返回各自的编码
+            """
+            # batch是一个句子列表，每个句子是token列表
             sentences = [' '.join(s) for s in batch]
 
-            batch = self.tokenizer.batch_encode_plus(
-                sentences,
-                return_tensors='pt',
-                padding=True,
-            )
-
-            for k in batch:
-                batch[k] = batch[k].to(self.args.device)
+            # 使用模板编码每个句子
+            if self.model_args and hasattr(self.model_args, 'mask_embedding_sentence') and self.model_args.mask_embedding_sentence:
+                # 应用模板：构造完整模板字符串（优化：利用tokenizer批量处理）
+                template = self.model_args.mask_embedding_sentence_template
+                parts = template.split('[X]')
+                prefix = parts[0]  # "The sentence of \""
+                suffix = parts[1] if len(parts) > 1 else " means [MASK]."
+                
+                # 为每个句子构造完整的模板字符串
+                templated_sentences = []
+                for sent in sentences:
+                    # 构造完整模板字符串："The sentence of "原句子" means [MASK]."
+                    full_text = prefix + sent + suffix
+                    templated_sentences.append(full_text)
+                
+                # 批量编码（利用tokenizer的内置优化）
+                batch_input = self.tokenizer.batch_encode_plus(
+                    templated_sentences,
+                    return_tensors='pt',
+                    padding=True,
+                )
+                for k in batch_input:
+                    batch_input[k] = batch_input[k].to(self.args.device)
+            else:
+                # 不使用模板，直接编码
+                batch_input = self.tokenizer.batch_encode_plus(
+                    sentences,
+                    return_tensors='pt',
+                    padding=True,
+                )
+                for k in batch_input:
+                    batch_input[k] = batch_input[k].to(self.args.device)
 
             with torch.no_grad():
-                outputs = self.model(**batch, output_hidden_states=True, return_dict=True, sent_emb=True)
+                outputs = self.model(**batch_input, output_hidden_states=True, return_dict=True, sent_emb=True)
                 pooler_output = outputs.pooler_output
 
             return pooler_output.cpu()

@@ -24,8 +24,13 @@ preprocessing_num_workers: 10
 use_mps_device: false
 dataloader_drop_last: true
 seed: 0
+logging_steps: 50
 
 # PrismDecomp specific arguments
 num_semantics: 7
 orthogonal_constraint: true
 semantic_weights_learnable: true
+
+# Template configuration
+mask_embedding_sentence: true
+mask_embedding_sentence_template: "The sentence of \"[X]\" means [MASK]."

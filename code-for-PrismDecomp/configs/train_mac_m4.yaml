@@ -9,7 +9,7 @@ max_seq_length: 32
 evaluation_strategy: steps
 metric_for_best_model: stsb_spearman
 load_best_model_at_end: true
-eval_steps: 5 # 每eval_steps个更新梯度进行一次评估，即gradient_accumulation_steps
+eval_steps: 2 # 每eval_steps个更新梯度进行一次评估，即gradient_accumulation_steps
 #save_steps: 125
 overwrite_output_dir: true
 do_train: true
@@ -18,8 +18,15 @@ preprocessing_num_workers: 10
 use_mps_device: false
 dataloader_drop_last: true
 seed: 0
+overwrite_cache: false
+
+logging_steps: 2
 
 # PrismDecomp specific arguments
 num_semantics: 7
 orthogonal_constraint: true
 semantic_weights_learnable: true
+
+# Template configuration
+mask_embedding_sentence: true
+mask_embedding_sentence_template: "The sentence of \"[X]\" means [MASK]."

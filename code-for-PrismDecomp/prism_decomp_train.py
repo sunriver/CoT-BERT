@@ -112,6 +112,16 @@ class ModelArguments:
             "help": "Whether semantic weights are learnable parameters"
         }
     )
+    
+    # Template arguments
+    mask_embedding_sentence: bool = field(
+        default=True,
+        metadata={"help": "Whether to use template with [MASK] token"}
+    )
+    mask_embedding_sentence_template: str = field(
+        default="The sentence of \"[X]\" means [MASK].",
+        metadata={"help": "Template for sentence representation"}
+    )
 
 @dataclass
 class DataTrainingArguments:
@@ -142,6 +152,10 @@ class DataTrainingArguments:
     train_file: Optional[str] = field(
         default=None, 
         metadata={"help": "The training data file (.txt or .csv)."}
+    )
+    validation_file: Optional[str] = field(
+        default=None,
+        metadata={"help": "The validation data file (.txt or .csv)."}
     )
     max_seq_length: Optional[int] = field(
         default=32,
@@ -256,14 +270,11 @@ class OurTrainingArguments(TrainingArguments):
 from parse_args_util import load_configs
 
 def prepare_features(examples, model_args, data_args, tokenizer):
-    # padding = longest (default)
-    #   If no sentence in the batch exceed the max length, then use
-    #   the max sentence length in the batch, otherwise use the 
-    #   max sentence length in the argument and truncate those that
-    #   exceed the max length.
-
-    # padding = max_length (when pad_to_max_length, for pressure test)
-    #   All sentences are padded/truncated to data_args.max_seq_length.
+    """
+    单视图数据准备函数
+    使用模板为每个句子生成一个语义视图，然后进行棱镜分解
+    对每个子语义采用SPR方式提高语义表示效果，降低计算开销
+    """
     total = len(examples['text'])
 
     # Avoid "None" fields
@@ -271,24 +282,53 @@ def prepare_features(examples, model_args, data_args, tokenizer):
         if examples['text'][idx] is None:
             examples['text'][idx] = " "
 
-    sentences = examples['text'] + examples['text']  # For unsupervised learning, use the same sentence
+    # 单视图：每个句子只处理一次，不复制（节省计算）
+    sentences = examples['text']
 
-    sent_features = {'input_ids': [], 'attention_mask': []}
+    if model_args.mask_embedding_sentence:
+        # 解析模板，分离为前缀和后缀
+        # 模板格式: "The sentence of \"[X]\" means [MASK]."
+        template = model_args.mask_embedding_sentence_template
+        parts = template.split('[X]')
+        prefix = parts[0]  # "The sentence of \""
+        suffix = parts[1] if len(parts) > 1 else " means [MASK]."  # "\" means [MASK]."
+        
+        # 编码前缀和后缀（去掉首尾的特殊token）
+        bs = tokenizer.encode(prefix, add_special_tokens=False)
+        es = tokenizer.encode(suffix, add_special_tokens=False)
+        
+        sent_features = {'input_ids': [], 'attention_mask': []}
+        
+        for i, s in enumerate(sentences):
+            # 编码句子内容
+            s = tokenizer.encode(s, add_special_tokens=False)[:data_args.max_seq_length]
+            # 组合: [CLS] + prefix + sentence + suffix + [SEP]
+            sent_features['input_ids'].append([tokenizer.cls_token_id] + bs + s + es + [tokenizer.sep_token_id])
+        
+        # 填充到相同长度
+        ml = max(len(i) for i in sent_features['input_ids'])
+        
+        for i in range(len(sent_features['input_ids'])):
+            t = sent_features['input_ids'][i]
+            sent_features['input_ids'][i] = t + [tokenizer.pad_token_id] * (ml - len(t))
+            sent_features['attention_mask'].append(len(t) * [1] + (ml - len(t)) * [0])
+    else:
+        # 原始编码方式
+        sent_features = {'input_ids': [], 'attention_mask': []}
+        for i, s in enumerate(sentences):
+            s = tokenizer.encode(s, add_special_tokens=False)[:data_args.max_seq_length]
+            sent_features['input_ids'].append(s)
+        
+        ml = max(len(i) for i in sent_features['input_ids'])
+        for i in range(len(sent_features['input_ids'])):
+            t = sent_features['input_ids'][i]
+            sent_features['input_ids'][i] = t + [tokenizer.pad_token_id] * (ml - len(t))
+            sent_features['attention_mask'].append(len(t) * [1] + (ml - len(t)) * [0])
 
-    for i, s in enumerate(sentences):
-        s = tokenizer.encode(s, add_special_tokens=False)[:data_args.max_seq_length]
-        sent_features['input_ids'].append(s)
-    
-    ml = max(len(i) for i in sent_features['input_ids'])
-
-    for i in range(len(sent_features['input_ids'])):
-        t = sent_features['input_ids'][i]
-        sent_features['input_ids'][i] = t + [tokenizer.pad_token_id] * (ml - len(t))
-        sent_features['attention_mask'].append(len(t) * [1] + (ml - len(t)) * [0])
-
+    # 单视图：每个样本只返回一个视图
     features = {}
     for key in sent_features:
-        features[key] = [[sent_features[key][i], sent_features[key][i + total]] for i in range(total)]
+        features[key] = [[sent_features[key][i]] for i in range(total)]
 
     return features
 

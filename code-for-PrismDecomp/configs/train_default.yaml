@@ -22,3 +22,7 @@ seed: 0
 num_semantics: 7
 orthogonal_constraint: true
 semantic_weights_learnable: true
+
+# Template configuration
+mask_embedding_sentence: true
+mask_embedding_sentence_template: "The sentence of \"[X]\" means [MASK]."

@@ -303,28 +303,43 @@ def prism_decomp_forward(cls,
         return_dict=True,
     )
 
-    # 提取CLS token作为句子表示
-    sentence_repr = outputs.last_hidden_state[:, 0, :]  # (batch_size * num_sent, hidden_dim)
+    # 提取句子表示
+    if hasattr(cls, 'model_args') and cls.model_args is not None and hasattr(cls.model_args, 'mask_embedding_sentence') and cls.model_args.mask_embedding_sentence:
+        # 找到[MASK]位置并提取其表示
+        mask_token_id = cls.config.mask_token_id if hasattr(cls.config, 'mask_token_id') else 103
+        
+        # 为每个句子找到mask token位置
+        batch_size_flat = input_ids.size(0)
+        sentence_repr_list = []
+        
+        for i in range(batch_size_flat):
+            mask_positions = (input_ids[i] == mask_token_id).nonzero(as_tuple=True)[0]
+            if len(mask_positions) > 0:
+                # 使用第一个[MASK]的位置
+                mask_pos = mask_positions[0].item()
+                sentence_repr_list.append(outputs.last_hidden_state[i, mask_pos, :])
+            else:
+                # 如果没有[MASK]，回退到[CLS]
+                sentence_repr_list.append(outputs.last_hidden_state[i, 0, :])
+        
+        sentence_repr = torch.stack(sentence_repr_list, dim=0)  # (batch_size * num_sent, hidden_dim)
+    else:
+        # 原始方式：提取CLS token作为句子表示
+        sentence_repr = outputs.last_hidden_state[:, 0, :]  # (batch_size * num_sent, hidden_dim)
     
     # 重塑为 (batch_size, num_sent, hidden_dim)
     sentence_repr = sentence_repr.view(batch_size, num_sent, -1)
     
-    # 对每个句子进行多语义SPR处理
-    final_reprs = []
-    total_spr_losses = []
-    semantic_spr_losses_list = []
+    # 单视图：对单个句子进行多语义SPR处理
+    # sentence_repr shape: (batch_size, num_sent, hidden_dim)
+    # num_sent 现在为 1（单视图）
+    final_repr, total_spr_loss, semantic_spr_losses = cls.multisemantic_spr(sentence_repr[:, 0])
     
-    for i in range(num_sent):
-        final_repr, total_spr_loss, semantic_spr_losses = cls.multisemantic_spr(sentence_repr[:, i])
-        final_reprs.append(final_repr)
-        total_spr_losses.append(total_spr_loss)
-        semantic_spr_losses_list.append(semantic_spr_losses)
+    # 直接使用总SPR损失（不再平均多个视图）
+    avg_spr_loss = total_spr_loss
     
-    # 平均SPR损失
-    avg_spr_loss = torch.stack(total_spr_losses).mean()
-    
-    # 使用第一个句子的表示作为输出（用于无监督学习）
-    logits = final_reprs[0]
+    # 使用处理后的表示作为输出
+    logits = final_repr
 
     if not return_dict:
         output = (logits,) + outputs[2:]
@@ -355,10 +370,19 @@ def sentemb_forward(
     """
     句子嵌入前向传播（用于评估）
     返回融合后的多语义句子表示
+    支持SentEval STS任务：每个句子独立处理
+    
+    输入:
+        input_ids: (batch_size, seq_len) - 一批句子，每个句子已经用模板包裹
+        attention_mask: (batch_size, seq_len)
+    
+    输出:
+        pooler_output: (batch_size, hidden_dim) - 每个句子的融合表示
     """
     return_dict = return_dict if return_dict is not None else cls.config.use_return_dict
 
     # BERT编码
+    # input_ids shape: (batch_size, seq_len) - 例如 (8, 128)
     outputs = encoder(
         input_ids=input_ids,
         attention_mask=attention_mask,
@@ -371,8 +395,22 @@ def sentemb_forward(
         return_dict=True,
     )
 
-    # 提取CLS token作为句子表示
-    sentence_repr = outputs.last_hidden_state[:, 0, :]
+    # 提取句子表示 (从每个句子的MASK位置)
+    if hasattr(cls, 'model_args') and cls.model_args is not None and hasattr(cls.model_args, 'mask_embedding_sentence') and cls.model_args.mask_embedding_sentence:
+        mask_token_id = cls.config.mask_token_id if hasattr(cls.config, 'mask_token_id') else 103
+        
+        # 为每个句子提取mask位置
+        # input_ids.size(0) = batch_size (批次中的句子数)
+        sentence_repr_list = []
+        for i in range(input_ids.size(0)):
+            mask_pos_i = (input_ids[i] == mask_token_id).nonzero(as_tuple=True)[0]
+            if len(mask_pos_i) > 0:
+                sentence_repr_list.append(outputs.last_hidden_state[i, mask_pos_i[0].item(), :])
+            else:
+                sentence_repr_list.append(outputs.last_hidden_state[i, 0, :])
+        sentence_repr = torch.stack(sentence_repr_list, dim=0)  # (batch_size, hidden_dim)
+    else:
+        sentence_repr = outputs.last_hidden_state[:, 0, :]  # (batch_size, hidden_dim)
     
     # 多语义SPR处理（仅前向传播，不计算损失）
     with torch.no_grad():
