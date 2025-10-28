@@ -4,7 +4,7 @@ output_dir: "../result/PrismDecomp-BERT"
 num_train_epochs: 1
 per_device_train_batch_size: 32
 gradient_accumulation_steps: 1 # 每gradient_accumulation_steps个step更新一次梯度，相当于batch_size=32*gradient_accumulation_steps，
-learning_rate: 1e-5
+learning_rate: 5e-6
 max_seq_length: 32
 evaluation_strategy: steps
 metric_for_best_model: stsb_spearman

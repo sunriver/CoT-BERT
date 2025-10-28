@@ -77,7 +77,7 @@ def test_multisemantic_spr():
     num_semantics = 7
     batch_size = 4
     
-    multisemantic_spr = MultiSemanticSPR(hidden_dim, num_semantics, lambda1=1.0, lambda2=0.01)
+    multisemantic_spr = MultiSemanticSPR(hidden_dim, num_semantics, lambda1=0.5, lambda2=0.1)
     
     # 创建测试输入
     sentence_repr = torch.randn(batch_size, hidden_dim)

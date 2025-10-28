@@ -142,6 +142,7 @@ class SPR_Module(nn.Module):
     def forward(self, semantic_repr):
         """
         对单个语义表示进行SPR处理
+        使用归一化 + 停止梯度防止坍塌
         Args:
             semantic_repr: (batch_size, hidden_dim) 语义表示 h
         Returns:
@@ -157,9 +158,15 @@ class SPR_Module(nn.Module):
         # Step 3: 预测 → p = f_pred(z)
         p = self.prediction(z)
         
-        # Step 4: SPR正则项 L_spr = ||p - h||^2
-        # 计算预测结果p与原始语义表示h的L2距离平方
-        spr_loss = F.mse_loss(p, h)
+        # Step 4: SPR正则项（归一化版本 + 停止梯度）
+        # 归一化表示
+        p_norm = F.normalize(p, p=2, dim=-1)
+        # 停止梯度，防止坍塌到恒等映射
+        h_norm = F.normalize(h.detach(), p=2, dim=-1)
+        
+        # 计算归一化后的余弦一致性损失
+        # 使用 1 - cosine_similarity 作为损失函数
+        spr_loss = 1.0 - (p_norm * h_norm).sum(dim=-1).mean()
         
         # 返回预测结果p作为处理后的表示
         return p, spr_loss
@@ -242,11 +249,12 @@ def prism_decomp_init(cls, config):
     棱镜分解模型初始化函数
     """
     # 初始化多语义SPR模块，使用软正交 + 自正则化组合损失函数
+    # 调整权重以防止模型学习恒等映射
     cls.multisemantic_spr = MultiSemanticSPR(
         config.hidden_size, 
         num_semantics=7,
-        lambda1=1.0,    # λ₁: 自正则化权重
-        lambda2=0.01    # λ₂: 软正交权重（保持轻度正交）
+        lambda1=0.5,    # λ₁: 自正则化权重（降低以防止快速收敛）
+        lambda2=0.1     # λ₂: 软正交权重（增强以保持语义独立性）
     )
     
     # 设置语义维度数量
