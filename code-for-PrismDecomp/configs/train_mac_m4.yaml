@@ -10,7 +10,7 @@ evaluation_strategy: steps
 metric_for_best_model: stsb_spearman
 load_best_model_at_end: true
 eval_steps: 5 # 每eval_steps个更新梯度进行一次评估，即gradient_accumulation_steps
-save_steps: 125
+#save_steps: 125
 overwrite_output_dir: true
 do_train: true
 fp16: false
