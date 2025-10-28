@@ -3,10 +3,13 @@ train_file: "../data/wiki1m_for_simcse.txt"
 output_dir: "../result/PrismDecomp-BERT"
 num_train_epochs: 1
 per_device_train_batch_size: 32
-gradient_accumulation_steps: 4
+gradient_accumulation_steps: 1 # 每gradient_accumulation_steps个step更新一次梯度，相当于batch_size=32*gradient_accumulation_steps，
 learning_rate: 1e-5
 max_seq_length: 32
-evaluation_strategy: no
+evaluation_strategy: steps
+metric_for_best_model: stsb_spearman
+load_best_model_at_end: true
+eval_steps: 5 # 每eval_steps个更新梯度进行一次评估，即gradient_accumulation_steps
 save_steps: 125
 overwrite_output_dir: true
 do_train: true

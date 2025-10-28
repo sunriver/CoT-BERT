@@ -29,14 +29,16 @@ def test_semantic_decomposer():
     sentence_repr = torch.randn(batch_size, hidden_dim)
     
     # 前向传播
-    semantic_reprs = decomposer(sentence_repr)
+    semantic_reprs, orth_loss = decomposer(sentence_repr)
     
     print(f"输入形状: {sentence_repr.shape}")
     print(f"输出形状: {semantic_reprs.shape}")
     print(f"语义维度数量: {semantic_reprs.shape[1]}")
+    print(f"软正交损失: {orth_loss.item():.4f}")
     
     # 验证输出形状
     assert semantic_reprs.shape == (batch_size, num_semantics, hidden_dim), f"期望形状 {(batch_size, num_semantics, hidden_dim)}, 实际形状 {semantic_reprs.shape}"
+    assert orth_loss.item() >= 0, "软正交损失应该非负"
     
     print("✅ 语义分解器测试通过!")
     return True
@@ -75,23 +77,25 @@ def test_multisemantic_spr():
     num_semantics = 7
     batch_size = 4
     
-    multisemantic_spr = MultiSemanticSPR(hidden_dim, num_semantics)
+    multisemantic_spr = MultiSemanticSPR(hidden_dim, num_semantics, lambda1=1.0, lambda2=0.01)
     
     # 创建测试输入
     sentence_repr = torch.randn(batch_size, hidden_dim)
     
     # 前向传播
-    final_repr, total_spr_loss, semantic_spr_losses = multisemantic_spr(sentence_repr)
+    final_repr, total_loss, semantic_spr_losses = multisemantic_spr(sentence_repr)
     
     print(f"输入形状: {sentence_repr.shape}")
     print(f"输出形状: {final_repr.shape}")
-    print(f"总SPR损失: {total_spr_loss.item():.4f}")
+    print(f"总损失: {total_loss.item():.4f}")
     print(f"语义SPR损失数量: {len(semantic_spr_losses)}")
+    print(f"λ₁ (自正则化权重): {multisemantic_spr.lambda1}")
+    print(f"λ₂ (软正交权重): {multisemantic_spr.lambda2}")
     
     # 验证输出形状
     assert final_repr.shape == (batch_size, hidden_dim), f"期望形状 {(batch_size, hidden_dim)}, 实际形状 {final_repr.shape}"
     assert len(semantic_spr_losses) == num_semantics, f"期望语义损失数量 {num_semantics}, 实际数量 {len(semantic_spr_losses)}"
-    assert total_spr_loss.item() > 0, "总SPR损失应该大于0"
+    assert total_loss.item() > 0, "总损失应该大于0"
     
     print("✅ 多语义SPR模型测试通过!")
     return True
@@ -136,11 +140,11 @@ def test_bert_for_prism_decomp():
         )
         
         print(f"输出logits形状: {outputs.logits.shape}")
-        print(f"SPR损失值: {outputs.loss.item():.4f}")
+        print(f"总损失值: {outputs.loss.item():.4f}")
         
         # 验证输出形状
         assert outputs.logits.shape == (batch_size, config.hidden_size), f"期望形状 {(batch_size, config.hidden_size)}, 实际形状 {outputs.logits.shape}"
-        assert outputs.loss.item() > 0, "SPR损失应该大于0"
+        assert outputs.loss.item() > 0, "总损失应该大于0"
         
         print("✅ BERT PrismDecomp模型测试通过!")
         return True

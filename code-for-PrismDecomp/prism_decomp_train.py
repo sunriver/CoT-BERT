@@ -444,7 +444,7 @@ def main():
         def __call__(self, features: List[Dict[str, Union[List[int], List[List[int]], torch.Tensor]]]) -> Dict[str, torch.Tensor]:
             special_keys = ['input_ids', 'attention_mask', 'token_type_ids']
             bs = len(features)
-            print(f"OurDataCollatorWithPadding batchSize={bs}")
+            # print(f"OurDataCollatorWithPadding batchSize={bs}")
 
             if bs > 0:
                 num_sent = len(features[0]['input_ids'])
