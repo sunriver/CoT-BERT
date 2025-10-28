@@ -10,8 +10,8 @@ from transformers.modeling_outputs import SequenceClassifierOutput, BaseModelOut
 
 class OrthogonalConstraint(nn.Module):
     """
-    正交约束模块：确保语义维度的独立性
-    通过Gram-Schmidt正交化过程实现
+    软正交约束模块：通过损失函数鼓励语义维度的独立性
+    使用软正交损失：L_orth = ||H^T H - I||_F²
     """
     def __init__(self, eps=1e-6):
         super().__init__()
@@ -19,59 +19,37 @@ class OrthogonalConstraint(nn.Module):
     
     def forward(self, semantic_reprs):
         """
-        对语义表示应用正交约束
+        计算软正交损失而不是强制正交化
         Args:
             semantic_reprs: (batch_size, num_semantics, hidden_dim)
         Returns:
-            orthogonal_reprs: 正交化后的语义表示
+            semantic_reprs: 原样返回（不修改）
+            orth_loss: 软正交损失
         """
         batch_size, num_semantics, hidden_dim = semantic_reprs.shape
         
-        # 重塑为 (batch_size * num_semantics, hidden_dim) 进行批量处理
-        flat_reprs = semantic_reprs.view(-1, hidden_dim)
-        
-        # 对每个batch分别进行正交化
-        orthogonal_reprs = []
+        # 计算每个batch的软正交损失
+        orth_losses = []
         for i in range(batch_size):
-            batch_reprs = flat_reprs[i * num_semantics:(i + 1) * num_semantics]
-            orthogonal_batch = self._gram_schmidt(batch_reprs)
-            orthogonal_reprs.append(orthogonal_batch)
-        
-        # 重新组合
-        orthogonal_reprs = torch.stack(orthogonal_reprs, dim=0)
-        return orthogonal_reprs
-    
-    def _gram_schmidt(self, vectors):
-        """
-        Gram-Schmidt正交化过程
-        Args:
-            vectors: (num_semantics, hidden_dim)
-        Returns:
-            orthogonal_vectors: 正交化后的向量
-        """
-        num_semantics, hidden_dim = vectors.shape
-        orthogonal_vectors = torch.zeros_like(vectors)
-        
-        for i in range(num_semantics):
-            # 取当前向量
-            v = vectors[i]
-            
-            # 减去与前面向量的投影
-            for j in range(i):
-                if torch.norm(orthogonal_vectors[j]) > self.eps:
-                    projection = torch.dot(v, orthogonal_vectors[j]) / torch.dot(orthogonal_vectors[j], orthogonal_vectors[j])
-                    v = v - projection * orthogonal_vectors[j]
+            # 取出单个batch的语义表示 (num_semantics, hidden_dim)
+            batch_reprs = semantic_reprs[i]
             
             # 归一化
-            norm = torch.norm(v)
-            if norm > self.eps:
-                orthogonal_vectors[i] = v / norm
-            else:
-                # 如果向量太小，使用随机向量
-                orthogonal_vectors[i] = torch.randn_like(v)
-                orthogonal_vectors[i] = orthogonal_vectors[i] / torch.norm(orthogonal_vectors[i])
+            normalized = F.normalize(batch_reprs, p=2, dim=1)
+            
+            # 计算Gram矩阵 H^T H
+            gram_matrix = torch.mm(normalized, normalized.t())
+            
+            # 计算与单位矩阵的差异 ||H^T H - I||_F²
+            identity = torch.eye(num_semantics, device=semantic_reprs.device)
+            orth_loss = torch.norm(gram_matrix - identity, p='fro') ** 2
+            
+            orth_losses.append(orth_loss)
         
-        return orthogonal_vectors
+        # 平均软正交损失
+        avg_orth_loss = torch.stack(orth_losses).mean()
+        
+        return semantic_reprs, avg_orth_loss
 
 
 class SemanticDecomposer(nn.Module):
@@ -114,6 +92,7 @@ class SemanticDecomposer(nn.Module):
             sentence_repr: (batch_size, hidden_dim) 句子表示
         Returns:
             semantic_reprs: (batch_size, num_semantics, hidden_dim) 分解后的语义表示
+            orth_loss: 软正交损失
         """
         # 应用分解矩阵
         decomposed = torch.matmul(sentence_repr, self.decomposition_matrix)
@@ -127,10 +106,10 @@ class SemanticDecomposer(nn.Module):
         # 应用激活函数
         semantic_reprs = self.activation(semantic_reprs)
         
-        # 应用正交约束
-        semantic_reprs = self.orthogonal_constraint(semantic_reprs)
+        # 应用软正交约束，获取软正交损失
+        semantic_reprs, orth_loss = self.orthogonal_constraint(semantic_reprs)
         
-        return semantic_reprs
+        return semantic_reprs, orth_loss
 
 
 class SPR_Module(nn.Module):
@@ -189,12 +168,15 @@ class SPR_Module(nn.Module):
 class MultiSemanticSPR(nn.Module):
     """
     多语义SPR模型：结合语义分解和并行SPR处理
-    为每个语义表示分别计算SPR自正则化损失
+    实现软正交 + 自正则化组合损失函数：
+    L = L_task + λ₁ Σᵢ L_spr,i + λ₂ ||H^T H - I||_F²
     """
-    def __init__(self, hidden_dim: int, num_semantics: int = 7):
+    def __init__(self, hidden_dim: int, num_semantics: int = 7, lambda1: float = 1.0, lambda2: float = 0.01):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.num_semantics = num_semantics
+        self.lambda1 = lambda1  # λ₁: 自正则化权重
+        self.lambda2 = lambda2  # λ₂: 软正交权重
         
         # 语义分解器
         self.decomposer = SemanticDecomposer(hidden_dim, num_semantics)
@@ -217,15 +199,16 @@ class MultiSemanticSPR(nn.Module):
     def forward(self, sentence_repr):
         """
         多语义SPR前向传播
+        实现软正交 + 自正则化组合损失函数
         Args:
             sentence_repr: (batch_size, hidden_dim) 句子表示
         Returns:
             final_repr: 融合后的最终表示
-            total_spr_loss: 总SPR损失
+            total_loss: 总损失（包含SPR损失和软正交损失）
             semantic_spr_losses: 各语义维度的SPR损失
         """
-        # 分解为多个语义表示
-        semantic_reprs = self.decomposer(sentence_repr)
+        # 分解为多个语义表示，获取软正交损失
+        semantic_reprs, orth_loss = self.decomposer(sentence_repr)
         
         # 并行SPR处理
         processed_reprs = []
@@ -234,7 +217,7 @@ class MultiSemanticSPR(nn.Module):
         for i, spr_module in enumerate(self.spr_modules):
             # 对每个语义表示进行SPR处理
             # h_i -> z_i = f_proj(h_i) -> p_i = f_pred(z_i)
-            # L_spr_i = ||p_i - h_i||^2
+            # L_spr_i = ||p_i - h_i||^2 (子语义自一致性)
             processed_repr, spr_loss = spr_module(semantic_reprs[:, i])
             processed_reprs.append(processed_repr)
             semantic_spr_losses.append(spr_loss)
@@ -243,20 +226,28 @@ class MultiSemanticSPR(nn.Module):
         fused_repr = torch.cat(processed_reprs, dim=-1)
         final_repr = self.fusion_layer(fused_repr)
         
-        # 计算加权总SPR损失
-        # L_total = Σ(i=1 to 7) λ_i * L_spr_i
+        # 计算加权总SPR损失 Σᵢ L_spr,i
         weighted_losses = [weight * loss for weight, loss in zip(self.semantic_weights, semantic_spr_losses)]
         total_spr_loss = torch.stack(weighted_losses).sum()
         
-        return final_repr, total_spr_loss, semantic_spr_losses
+        # 组合损失函数：L = L_task + λ₁ Σᵢ L_spr,i + λ₂ ||H^T H - I||_F²
+        # 这里L_task为0（无监督学习），所以总损失为：
+        total_loss = self.lambda1 * total_spr_loss + self.lambda2 * orth_loss
+        
+        return final_repr, total_loss, semantic_spr_losses
 
 
 def prism_decomp_init(cls, config):
     """
     棱镜分解模型初始化函数
     """
-    # 初始化多语义SPR模块
-    cls.multisemantic_spr = MultiSemanticSPR(config.hidden_size, num_semantics=7)
+    # 初始化多语义SPR模块，使用软正交 + 自正则化组合损失函数
+    cls.multisemantic_spr = MultiSemanticSPR(
+        config.hidden_size, 
+        num_semantics=7,
+        lambda1=1.0,    # λ₁: 自正则化权重
+        lambda2=0.01    # λ₂: 软正交权重（保持轻度正交）
+    )
     
     # 设置语义维度数量
     cls.num_semantics = 7
@@ -385,7 +376,8 @@ def sentemb_forward(
     
     # 多语义SPR处理（仅前向传播，不计算损失）
     with torch.no_grad():
-        semantic_reprs = cls.multisemantic_spr.decomposer(sentence_repr)
+        # 分解时忽略软正交损失
+        semantic_reprs, _ = cls.multisemantic_spr.decomposer(sentence_repr)
         
         # 处理每个语义维度
         processed_reprs = []
