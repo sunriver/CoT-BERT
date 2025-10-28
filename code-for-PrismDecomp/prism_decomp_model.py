@@ -168,8 +168,8 @@ class SPR_Module(nn.Module):
         # 使用 1 - cosine_similarity 作为损失函数
         spr_loss = 1.0 - (p_norm * h_norm).sum(dim=-1).mean()
         
-        # 返回预测结果p作为处理后的表示
-        return p, spr_loss
+        # 返回归一化后的预测结果作为处理后的表示
+        return p_norm, spr_loss
 
 
 class MultiSemanticSPR(nn.Module):
@@ -232,6 +232,8 @@ class MultiSemanticSPR(nn.Module):
         # 融合处理后的表示
         fused_repr = torch.cat(processed_reprs, dim=-1)
         final_repr = self.fusion_layer(fused_repr)
+        # 归一化最终表示，便于余弦相似度评估
+        final_repr = F.normalize(final_repr, p=2, dim=-1)
         
         # 计算加权总SPR损失 Σᵢ L_spr,i
         weighted_losses = [weight * loss for weight, loss in zip(self.semantic_weights, semantic_spr_losses)]
@@ -425,17 +427,18 @@ def sentemb_forward(
         # 分解时忽略软正交损失
         semantic_reprs, _ = cls.multisemantic_spr.decomposer(sentence_repr)
         
-        # 处理每个语义维度
+        # 处理每个语义维度（调用完整的 forward()，与训练完全一致）
         processed_reprs = []
         for i, spr_module in enumerate(cls.multisemantic_spr.spr_modules):
-            # 只进行前向传播，不计算损失
-            projected = spr_module.projection(semantic_reprs[:, i])
-            predicted = spr_module.prediction(projected)
-            processed_reprs.append(predicted)
+            # 调用完整的 forward()，自动返回归一化的表示
+            processed_repr, _ = spr_module(semantic_reprs[:, i])
+            processed_reprs.append(processed_repr)
         
         # 融合处理后的表示
         fused_repr = torch.cat(processed_reprs, dim=-1)
         pooler_output = cls.multisemantic_spr.fusion_layer(fused_repr)
+        # 归一化最终表示，便于余弦相似度评估
+        pooler_output = F.normalize(pooler_output, p=2, dim=-1)
 
     if not return_dict:
         return (outputs[0], pooler_output) + outputs[2:]
