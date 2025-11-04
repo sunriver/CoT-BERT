@@ -114,8 +114,8 @@ class SemanticDecomposer(nn.Module):
 
 class SPR_Module(nn.Module):
     """
-    自正则化（Self-Projection Regularization）模块
-    参考CSE-SFP的SPR方法，不使用InfoNCE损失，而是使用自正则化
+    投影预测模块：对子语义表示进行投影和预测
+    用于生成正样本h+的组件
     """
     def __init__(self, hidden_dim: int, dropout_rate: float = 0.1):
         super().__init__()
@@ -141,54 +141,54 @@ class SPR_Module(nn.Module):
     
     def forward(self, semantic_repr):
         """
-        对单个语义表示进行SPR处理
-        使用归一化 + 停止梯度防止坍塌
+        对单个语义表示进行投影预测处理
         Args:
             semantic_repr: (batch_size, hidden_dim) 语义表示 h
         Returns:
-            processed_repr: 处理后的表示 p
-            spr_loss: SPR自正则化损失
+            processed_repr: 归一化后的预测表示 p_norm
         """
-        # Step 1: 编码句子 → 得到表示 h (输入)
-        h = semantic_repr
+        # Step 1: 投影 → z = f_proj(h)
+        z = self.projection(semantic_repr)
         
-        # Step 2: 投影 → z = f_proj(h)
-        z = self.projection(h)
-        
-        # Step 3: 预测 → p = f_pred(z)
+        # Step 2: 预测 → p = f_pred(z)
         p = self.prediction(z)
         
-        # Step 4: SPR正则项（归一化版本 + 停止梯度）
-        # 归一化表示
+        # Step 3: 归一化表示
         p_norm = F.normalize(p, p=2, dim=-1)
-        # 停止梯度，防止坍塌到恒等映射
-        h_norm = F.normalize(h.detach(), p=2, dim=-1)
-        
-        # 计算归一化后的余弦一致性损失
-        # 使用 1 - cosine_similarity 作为损失函数
-        spr_loss = 1.0 - (p_norm * h_norm).sum(dim=-1).mean()
         
         # 返回归一化后的预测结果作为处理后的表示
-        return p_norm, spr_loss
+        return p_norm
+
+
+class Similarity(nn.Module):
+    """
+    相似度计算模块：用于InfoNCE损失
+    计算余弦相似度并应用温度参数
+    """
+    def __init__(self, temp=0.05):
+        super().__init__()
+        self.temp = temp
+        self.cos = nn.CosineSimilarity(dim=-1)
+
+    def forward(self, x, y):
+        return self.cos(x, y) / self.temp
 
 
 class MultiSemanticSPR(nn.Module):
     """
-    多语义SPR模型：结合语义分解和并行SPR处理
-    实现软正交 + 自正则化组合损失函数：
-    L = L_task + λ₁ Σᵢ L_spr,i + λ₂ ||H^T H - I||_F²
+    多语义SPR模型：结合语义分解和并行投影预测处理
+    生成正样本h+用于InfoNCE对比学习
     """
-    def __init__(self, hidden_dim: int, num_semantics: int = 7, lambda1: float = 1.0, lambda2: float = 0.01):
+    def __init__(self, hidden_dim: int, num_semantics: int = 7, lambda2: float = 0.01):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.num_semantics = num_semantics
-        self.lambda1 = lambda1  # λ₁: 自正则化权重
         self.lambda2 = lambda2  # λ₂: 软正交权重
         
         # 语义分解器
         self.decomposer = SemanticDecomposer(hidden_dim, num_semantics)
         
-        # 7个并行的SPR模块
+        # 7个并行的投影预测模块
         self.spr_modules = nn.ModuleList([
             SPR_Module(hidden_dim) for _ in range(num_semantics)
         ])
@@ -199,65 +199,54 @@ class MultiSemanticSPR(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_dim * 2, hidden_dim)
         )
-        
-        # 语义权重（可学习）
-        self.semantic_weights = nn.Parameter(torch.ones(num_semantics) / num_semantics)
     
     def forward(self, sentence_repr):
         """
-        多语义SPR前向传播
-        实现软正交 + 自正则化组合损失函数
+        多语义投影预测前向传播
+        生成正样本h+和计算软正交损失
         Args:
-            sentence_repr: (batch_size, hidden_dim) 句子表示
+            sentence_repr: (batch_size, hidden_dim) 锚点样本h
         Returns:
-            final_repr: 融合后的最终表示
-            total_loss: 总损失（包含SPR损失和软正交损失）
-            semantic_spr_losses: 各语义维度的SPR损失
+            h_plus: (batch_size, hidden_dim) 融合后的正样本表示（归一化）
+            orth_loss: 软正交损失
         """
         # 分解为多个语义表示，获取软正交损失
         semantic_reprs, orth_loss = self.decomposer(sentence_repr)
         
-        # 并行SPR处理
+        # 并行投影预测处理
         processed_reprs = []
-        semantic_spr_losses = []
-        
         for i, spr_module in enumerate(self.spr_modules):
-            # 对每个语义表示进行SPR处理
+            # 对每个语义表示进行投影预测处理
             # h_i -> z_i = f_proj(h_i) -> p_i = f_pred(z_i)
-            # L_spr_i = ||p_i - h_i||^2 (子语义自一致性)
-            processed_repr, spr_loss = spr_module(semantic_reprs[:, i])
+            processed_repr = spr_module(semantic_reprs[:, i])
             processed_reprs.append(processed_repr)
-            semantic_spr_losses.append(spr_loss)
         
         # 融合处理后的表示
         fused_repr = torch.cat(processed_reprs, dim=-1)
-        final_repr = self.fusion_layer(fused_repr)
-        # 归一化最终表示，便于余弦相似度评估
-        final_repr = F.normalize(final_repr, p=2, dim=-1)
+        h_plus = self.fusion_layer(fused_repr)
+        # 归一化最终表示，便于余弦相似度计算
+        h_plus = F.normalize(h_plus, p=2, dim=-1)
         
-        # 计算加权总SPR损失 Σᵢ L_spr,i
-        weighted_losses = [weight * loss for weight, loss in zip(self.semantic_weights, semantic_spr_losses)]
-        total_spr_loss = torch.stack(weighted_losses).sum()
-        
-        # 组合损失函数：L = L_task + λ₁ Σᵢ L_spr,i + λ₂ ||H^T H - I||_F²
-        # 这里L_task为0（无监督学习），所以总损失为：
-        total_loss = self.lambda1 * total_spr_loss + self.lambda2 * orth_loss
-        
-        return final_repr, total_loss, semantic_spr_losses
+        return h_plus, orth_loss
 
 
-def prism_decomp_init(cls, config):
+def prism_decomp_init(cls, config, temperature=0.05, lambda2=0.01):
     """
     棱镜分解模型初始化函数
+    Args:
+        config: 模型配置
+        temperature: InfoNCE损失的温度参数（默认0.05）
+        lambda2: 软正交损失权重（默认0.01）
     """
-    # 初始化多语义SPR模块，使用软正交 + 自正则化组合损失函数
-    # 调整权重以防止模型学习恒等映射
+    # 初始化多语义SPR模块，用于生成正样本h+
     cls.multisemantic_spr = MultiSemanticSPR(
         config.hidden_size, 
         num_semantics=7,
-        lambda1=0.5,    # λ₁: 自正则化权重（降低以防止快速收敛）
-        lambda2=0.1     # λ₂: 软正交权重（增强以保持语义独立性）
+        lambda2=lambda2  # λ₂: 软正交权重
     )
+    
+    # 初始化相似度计算模块（用于InfoNCE损失）
+    cls.similarity = Similarity(temp=temperature)
     
     # 设置语义维度数量
     cls.num_semantics = 7
@@ -267,6 +256,10 @@ def prism_decomp_init(cls, config):
         "情感语义", "主题语义", "语法语义", 
         "时序语义", "空间语义", "因果语义", "程度语义"
     ]
+    
+    # 存储损失函数权重
+    cls.lambda2 = lambda2
+    cls.temperature = temperature
     
     cls.init_weights()
 
@@ -340,23 +333,57 @@ def prism_decomp_forward(cls,
     # 重塑为 (batch_size, num_sent, hidden_dim)
     sentence_repr = sentence_repr.view(batch_size, num_sent, -1)
     
-    # 单视图：对单个句子进行多语义SPR处理
+    # 提取锚点样本h：从MASK位置提取的原始表示
     # sentence_repr shape: (batch_size, num_sent, hidden_dim)
     # num_sent 现在为 1（单视图）
-    final_repr, total_spr_loss, semantic_spr_losses = cls.multisemantic_spr(sentence_repr[:, 0])
+    anchor_h = sentence_repr[:, 0]  # (batch_size, hidden_dim)
     
-    # 直接使用总SPR损失（不再平均多个视图）
-    avg_spr_loss = total_spr_loss
+    # 归一化锚点样本
+    anchor_h = F.normalize(anchor_h, p=2, dim=-1)
     
-    # 使用处理后的表示作为输出
-    logits = final_repr
+    # 通过多语义SPR生成正样本h+
+    # h+ = 融合(投影预测(分解(h)))
+    h_plus, orth_loss = cls.multisemantic_spr(anchor_h)
+    
+    # 计算InfoNCE损失
+    # 正样本对：anchor_h[i] 与 h_plus[i]
+    # 负样本对：anchor_h[i] 与 anchor_h[j]（i != j，批次内其他样本的锚点）
+    
+    # 构建相似度矩阵：(batch_size, batch_size + 1)
+    # 第一列：正样本对相似度（anchor_h[i] 与 h_plus[i]）
+    # 后续列：负样本对相似度（anchor_h[i] 与 anchor_h[j]）
+    
+    # 由于anchor_h和h_plus都已归一化，直接计算点积并应用温度
+    # 计算正样本对相似度（anchor_h[i] 与 h_plus[i]）
+    pos_sim = (anchor_h * h_plus).sum(dim=-1, keepdim=True) / cls.temperature  # (batch_size, 1)
+    
+    # 计算负样本对相似度（anchor_h[i] 与 anchor_h[j], i != j）
+    # 使用anchor_h作为负样本（批次内其他样本的锚点）
+    # 由于anchor_h已归一化，点积就是余弦相似度
+    neg_sim = torch.mm(anchor_h, anchor_h.t()) / cls.temperature  # (batch_size, batch_size)
+    
+    # 组合相似度矩阵：[正样本对, 负样本对]
+    cos_sim = torch.cat([pos_sim, neg_sim], dim=1)  # (batch_size, batch_size + 1)
+    
+    # 标签：第一列（索引0）是正样本对
+    labels = torch.zeros(batch_size, dtype=torch.long, device=anchor_h.device)
+    
+    # 计算InfoNCE损失
+    loss_fct = nn.CrossEntropyLoss()
+    infonce_loss = loss_fct(cos_sim, labels)
+    
+    # 总损失：L = L_infonce + λ₂ * L_orthogonal
+    total_loss = infonce_loss + cls.lambda2 * orth_loss
+    
+    # 使用正样本h+作为输出表示
+    logits = h_plus
 
     if not return_dict:
         output = (logits,) + outputs[2:]
-        return ((avg_spr_loss,) + output) if avg_spr_loss is not None else output
+        return ((total_loss,) + output) if total_loss is not None else output
     
     return SequenceClassifierOutput(
-        loss=avg_spr_loss,
+        loss=total_loss,
         logits=logits,
         hidden_states=outputs.hidden_states,
         attentions=outputs.attentions,
@@ -424,21 +451,12 @@ def sentemb_forward(
     
     # 多语义SPR处理（仅前向传播，不计算损失）
     with torch.no_grad():
-        # 分解时忽略软正交损失
-        semantic_reprs, _ = cls.multisemantic_spr.decomposer(sentence_repr)
+        # 归一化句子表示
+        sentence_repr_norm = F.normalize(sentence_repr, p=2, dim=-1)
         
-        # 处理每个语义维度（调用完整的 forward()，与训练完全一致）
-        processed_reprs = []
-        for i, spr_module in enumerate(cls.multisemantic_spr.spr_modules):
-            # 调用完整的 forward()，自动返回归一化的表示
-            processed_repr, _ = spr_module(semantic_reprs[:, i])
-            processed_reprs.append(processed_repr)
-        
-        # 融合处理后的表示
-        fused_repr = torch.cat(processed_reprs, dim=-1)
-        pooler_output = cls.multisemantic_spr.fusion_layer(fused_repr)
-        # 归一化最终表示，便于余弦相似度评估
-        pooler_output = F.normalize(pooler_output, p=2, dim=-1)
+        # 调用multisemantic_spr获取正样本h+（与训练时一致）
+        pooler_output, _ = cls.multisemantic_spr(sentence_repr_norm)
+        # h_plus已经是归一化的
 
     if not return_dict:
         return (outputs[0], pooler_output) + outputs[2:]
@@ -465,7 +483,11 @@ class BertForPrismDecomp(BertPreTrainedModel):
         self.model_args = model_kargs["model_args"]
         self.bert = BertModel(config)
 
-        prism_decomp_init(self, config)
+        # 从model_args获取温度参数和lambda2参数
+        temperature = getattr(self.model_args, 'temperature', 0.05) if self.model_args else 0.05
+        lambda2 = getattr(self.model_args, 'lambda2', 0.01) if self.model_args else 0.01
+        
+        prism_decomp_init(self, config, temperature=temperature, lambda2=lambda2)
 
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):

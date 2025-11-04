@@ -112,6 +112,18 @@ class ModelArguments:
             "help": "Whether semantic weights are learnable parameters"
         }
     )
+    temperature: float = field(
+        default=0.05,
+        metadata={
+            "help": "Temperature parameter for InfoNCE loss (default: 0.05)"
+        }
+    )
+    lambda2: float = field(
+        default=0.01,
+        metadata={
+            "help": "Weight for soft orthogonal loss (default: 0.01)"
+        }
+    )
     
     # Template arguments
     mask_embedding_sentence: bool = field(
