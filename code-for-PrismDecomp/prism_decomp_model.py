@@ -17,15 +17,20 @@ class OrthogonalConstraint(nn.Module):
         super().__init__()
         self.eps = eps
     
-    def forward(self, semantic_reprs):
+    def forward(self, semantic_reprs, compute_loss=True):
         """
         计算软正交损失而不是强制正交化
         Args:
             semantic_reprs: (batch_size, num_semantics, hidden_dim)
+            compute_loss: 是否计算软正交损失，默认True（训练时），False（评估时）
         Returns:
             semantic_reprs: 原样返回（不修改）
-            orth_loss: 软正交损失
+            orth_loss: 软正交损失（如果compute_loss=False则返回0）
         """
+        if not compute_loss:
+            # 评估时跳过损失计算，直接返回0
+            return semantic_reprs, torch.tensor(0.0, device=semantic_reprs.device)
+        
         batch_size, num_semantics, hidden_dim = semantic_reprs.shape
         
         # 计算每个batch的软正交损失
@@ -85,11 +90,12 @@ class SemanticDecomposer(nn.Module):
             # 使用Xavier初始化
             nn.init.xavier_uniform_(self.decomposition_matrix)
     
-    def forward(self, sentence_repr):
+    def forward(self, sentence_repr, compute_orth_loss=True):
         """
         将句子表示分解为多个语义表示
         Args:
             sentence_repr: (batch_size, hidden_dim) 句子表示
+            compute_orth_loss: 是否计算软正交损失，默认True（训练时），False（评估时）
         Returns:
             semantic_reprs: (batch_size, num_semantics, hidden_dim) 分解后的语义表示
             orth_loss: 软正交损失
@@ -107,7 +113,7 @@ class SemanticDecomposer(nn.Module):
         semantic_reprs = self.activation(semantic_reprs)
         
         # 应用软正交约束，获取软正交损失
-        semantic_reprs, orth_loss = self.orthogonal_constraint(semantic_reprs)
+        semantic_reprs, orth_loss = self.orthogonal_constraint(semantic_reprs, compute_loss=compute_orth_loss)
         
         return semantic_reprs, orth_loss
 
@@ -120,7 +126,6 @@ class SPR_Module(nn.Module):
     def __init__(self, hidden_dim: int, dropout_rate: float = 0.1):
         super().__init__()
         self.hidden_dim = hidden_dim
-        self.dropout_rate = dropout_rate
         
         # 投影层 f_proj: h -> z
         self.projection = nn.Sequential(
@@ -135,9 +140,6 @@ class SPR_Module(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim)
         )
-        
-        # Dropout层用于数据增强
-        self.dropout = nn.Dropout(dropout_rate)
     
     def forward(self, semantic_repr):
         """
@@ -200,18 +202,19 @@ class MultiSemanticSPR(nn.Module):
             nn.Linear(hidden_dim * 2, hidden_dim)
         )
     
-    def forward(self, sentence_repr):
+    def forward(self, sentence_repr, compute_orth_loss=True):
         """
         多语义投影预测前向传播
         生成正样本h+和计算软正交损失
         Args:
             sentence_repr: (batch_size, hidden_dim) 锚点样本h
+            compute_orth_loss: 是否计算软正交损失，默认True（训练时），False（评估时）
         Returns:
             h_plus: (batch_size, hidden_dim) 融合后的正样本表示（归一化）
             orth_loss: 软正交损失
         """
         # 分解为多个语义表示，获取软正交损失
-        semantic_reprs, orth_loss = self.decomposer(sentence_repr)
+        semantic_reprs, orth_loss = self.decomposer(sentence_repr, compute_orth_loss=compute_orth_loss)
         
         # 并行投影预测处理
         processed_reprs = []
@@ -451,11 +454,9 @@ def sentemb_forward(
     
     # 多语义SPR处理（仅前向传播，不计算损失）
     with torch.no_grad():
-        # 归一化句子表示
-        sentence_repr_norm = F.normalize(sentence_repr, p=2, dim=-1)
-        
-        # 调用multisemantic_spr获取正样本h+（与训练时一致）
-        pooler_output, _ = cls.multisemantic_spr(sentence_repr_norm)
+        # 直接调用multisemantic_spr，无需预先归一化（内部会对最终输出归一化）
+        # 评估时跳过软正交损失计算以提高效率
+        pooler_output, _ = cls.multisemantic_spr(sentence_repr, compute_orth_loss=False)
         # h_plus已经是归一化的
 
     if not return_dict:
