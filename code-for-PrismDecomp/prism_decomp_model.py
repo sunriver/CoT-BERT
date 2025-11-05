@@ -365,6 +365,17 @@ def prism_decomp_forward(cls,
     # 由于anchor_h已归一化，点积就是余弦相似度
     neg_sim = torch.mm(anchor_h, anchor_h.t()) / cls.temperature  # (batch_size, batch_size)
     
+    # 将对角线位置设为负无穷（排除自己作为负样本）
+    # 对角线元素是anchor_h[i]与自己的相似度（=1.0），不应该作为负样本
+    # 这会导致训练目标错误：模型学习让anchor_h与自己不相似，而不是学习语义表示
+    eye_mask = torch.eye(batch_size, device=anchor_h.device, dtype=torch.bool)
+    neg_sim = neg_sim.masked_fill(eye_mask, float('-inf'))
+    
+    # 数值稳定性保护：防止softmax溢出
+    neg_sim = torch.clamp(neg_sim, min=-50.0, max=50.0)
+    # 注意：clamp后需要重新设置对角线（因为clamp可能会改变-inf）
+    neg_sim = neg_sim.masked_fill(eye_mask, float('-inf'))
+    
     # 组合相似度矩阵：[正样本对, 负样本对]
     cos_sim = torch.cat([pos_sim, neg_sim], dim=1)  # (batch_size, batch_size + 1)
     

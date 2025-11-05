@@ -10,11 +10,11 @@ max_seq_length: 32
 evaluation_strategy: steps
 metric_for_best_model: stsb_spearman
 load_best_model_at_end: true
-eval_steps: 50
+eval_steps: 100
 
 # 补充保存策略配置
 save_strategy: steps       # 与评估策略保持一致（按步数保存）
-save_steps: 50             # 每 30 步保存一次（与 eval_steps 相同，确保每次评估后都保存）
+save_steps: 100             # 每 30 步保存一次（与 eval_steps 相同，确保每次评估后都保存）
 save_total_limit: 1        # 只保留最新的1个模型（即当前最佳模型）
 
 overwrite_output_dir: true
@@ -24,7 +24,7 @@ preprocessing_num_workers: 10
 use_mps_device: false
 dataloader_drop_last: true
 seed: 0
-logging_steps: 50
+logging_steps: 100
 
 # PrismDecomp specific arguments
 num_semantics: 7
