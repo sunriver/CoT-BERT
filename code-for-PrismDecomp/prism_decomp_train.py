@@ -119,9 +119,9 @@ class ModelArguments:
         }
     )
     lambda2: float = field(
-        default=0.01,
+        default=0.1,
         metadata={
-            "help": "Weight for soft orthogonal loss (default: 0.01)"
+            "help": "Weight for soft orthogonal loss (default: 0.1)"
         }
     )
     lambda_semantic: float = field(

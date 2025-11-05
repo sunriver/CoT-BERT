@@ -23,7 +23,7 @@ overwrite_cache: false
 logging_steps: 2
 
 # PrismDecomp specific arguments
-num_semantics: 7
+num_semantics: 3
 orthogonal_constraint: true
 semantic_weights_learnable: true
 

@@ -296,8 +296,7 @@ class AttentionFusion(nn.Module):
         # 输出投影
         h_plus = self.output_proj(fused)
         
-        # 归一化最终表示，便于余弦相似度计算
-        h_plus = F.normalize(h_plus, p=2, dim=-1)
+        # 不提前归一化，保持原始信号，只在计算相似度时归一化
         
         return h_plus
 
@@ -327,7 +326,7 @@ class MultiSemanticSPR(nn.Module):
     3. h_i → 局部信号增强 → h_i_enhanced
     4. h_i_enhanced → 投影预测 → h_i+
     """
-    def __init__(self, hidden_dim: int, num_semantics: int = 7, lambda2: float = 0.01):
+    def __init__(self, hidden_dim: int, num_semantics: int = 7, lambda2: float = 0.1):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.num_semantics = num_semantics
@@ -393,11 +392,8 @@ class MultiSemanticSPR(nn.Module):
             # 步骤4：投影预测 - 生成正样本h_i+
             h_i_plus = self.spr_modules[i](h_i_enhanced)
             
-            # 归一化h_i和h_i+，便于后续InfoNCE计算
-            h_i = F.normalize(h_i, p=2, dim=-1)
-            h_i_plus = F.normalize(h_i_plus, p=2, dim=-1)
-            
-            # 存储
+            # 不提前归一化，保持原始信号，只在计算相似度时归一化
+            # 存储原始表示
             h_i_list.append(h_i)
             h_i_plus_list.append(h_i_plus)
         
@@ -409,14 +405,13 @@ class MultiSemanticSPR(nn.Module):
             return None, orth_loss
 
 
-def prism_decomp_init(cls, config, temperature=0.05, lambda2=0.01, lambda_semantic=0.3):
+def prism_decomp_init(cls, config, temperature=0.05, lambda2=0.1):
     """
     棱镜分解模型初始化函数
     Args:
         config: 模型配置
         temperature: InfoNCE损失的温度参数（默认0.05）
-        lambda2: 软正交损失权重（默认0.01）
-        lambda_semantic: 子语义InfoNCE损失权重（默认0.3），用于平衡子语义和综合语义损失
+        lambda2: 软正交损失权重（默认0.1）
     """
     # 初始化多语义SPR模块，用于生成正样本h+
     cls.multisemantic_spr = MultiSemanticSPR(
@@ -447,7 +442,6 @@ def prism_decomp_init(cls, config, temperature=0.05, lambda2=0.01, lambda_semant
     # 存储损失函数权重
     cls.lambda2 = lambda2
     cls.temperature = temperature
-    cls.lambda_semantic = lambda_semantic  # 子语义InfoNCE损失权重
     
     cls.init_weights()
 
@@ -521,15 +515,12 @@ def prism_decomp_forward(cls,
     # 重塑为 (batch_size, num_sent, hidden_dim)
     sentence_repr = sentence_repr.view(batch_size, num_sent, -1)
     
-    # 提取锚点样本h：从MASK位置提取的原始表示
+    # 提取锚点样本h：从MASK位置提取的原始表示（不归一化，保持原始信号）
     # sentence_repr shape: (batch_size, num_sent, hidden_dim)
     # num_sent 现在为 1（单视图）
     anchor_h = sentence_repr[:, 0]  # (batch_size, hidden_dim)
     
-    # 归一化锚点样本
-    anchor_h = F.normalize(anchor_h, p=2, dim=-1)
-    
-    # 通过多语义SPR获取所有子语义h_i和h_i+
+    # 通过多语义SPR获取所有子语义h_i和h_i+（不提前归一化）
     # h_i_list: list of (batch_size, hidden_dim) 所有子语义h_i
     # h_i_plus_list: list of (batch_size, hidden_dim) 所有子语义h_i+
     h_i_list, h_i_plus_list, orth_loss = cls.multisemantic_spr(
@@ -541,62 +532,26 @@ def prism_decomp_forward(cls,
     # 使用注意力融合器融合所有子语义h_i+，得到综合语义表示h+
     h_plus = cls.attention_fusion(anchor_h, h_i_plus_list)  # (batch_size, hidden_dim)
     
-    # ========== 计算子语义InfoNCE损失 ==========
-    # 对每个子语义维度i（0-6）：
-    # - 锚点：h_i[batch_idx]
-    # - 正样本：h_i+[batch_idx]
-    # - 负样本：批次内其他句子的对应子语义h_i[j] (j != batch_idx)
-    
-    loss_fct = nn.CrossEntropyLoss()
-    semantic_infonce_losses = []
-    
-    for i in range(cls.num_semantics):
-        h_i = h_i_list[i]  # (batch_size, hidden_dim)
-        h_i_plus = h_i_plus_list[i]  # (batch_size, hidden_dim)
-        
-        # 计算正样本对相似度（h_i[j] 与 h_i+[j]）
-        pos_sim = (h_i * h_i_plus).sum(dim=-1, keepdim=True) / cls.temperature  # (batch_size, 1)
-        pos_sim = torch.clamp(pos_sim, min=-50.0, max=50.0)
-        
-        # 计算负样本对相似度（h_i[j] 与 h_i[k], k != j）
-        # 使用批次内其他句子的对应子语义h_i作为负样本
-        neg_sim = torch.mm(h_i, h_i.t()) / cls.temperature  # (batch_size, batch_size)
-        
-        # 将对角线位置设为负无穷（排除自己作为负样本）
-        eye_mask = torch.eye(batch_size, device=h_i.device, dtype=torch.bool)
-        neg_sim = neg_sim.masked_fill(eye_mask, float('-inf'))
-        
-        # 数值稳定性保护
-        neg_sim = torch.clamp(neg_sim, min=-50.0, max=50.0)
-        neg_sim = neg_sim.masked_fill(eye_mask, float('-inf'))
-        
-        # 组合相似度矩阵：[正样本对, 负样本对]
-        cos_sim = torch.cat([pos_sim, neg_sim], dim=1)  # (batch_size, batch_size + 1)
-        
-        # 标签：第一列（索引0）是正样本对
-        labels = torch.zeros(batch_size, dtype=torch.long, device=h_i.device)
-        
-        # 计算InfoNCE损失
-        semantic_infonce_loss = loss_fct(cos_sim, labels)
-        semantic_infonce_losses.append(semantic_infonce_loss)
-    
-    # 平均所有子语义的InfoNCE损失
-    avg_semantic_infonce_loss = torch.stack(semantic_infonce_losses).mean()
-    
     # ========== 计算综合语义InfoNCE损失 ==========
     # - 锚点：h[batch_idx]
     # - 正样本：h+[batch_idx]（注意力融合后的结果）
     # - 负样本：批次内其他句子的h[j] (j != batch_idx)
     
+    loss_fct = nn.CrossEntropyLoss()
+    
+    # 归一化用于计算相似度（仅在计算时归一化）
+    anchor_h_norm = F.normalize(anchor_h, p=2, dim=-1)
+    h_plus_norm = F.normalize(h_plus, p=2, dim=-1)
+    
     # 计算正样本对相似度（anchor_h[i] 与 h_plus[i]）
-    pos_sim_global = (anchor_h * h_plus).sum(dim=-1, keepdim=True) / cls.temperature  # (batch_size, 1)
+    pos_sim_global = (anchor_h_norm * h_plus_norm).sum(dim=-1, keepdim=True) / cls.temperature  # (batch_size, 1)
     pos_sim_global = torch.clamp(pos_sim_global, min=-50.0, max=50.0)
     
     # 计算负样本对相似度（anchor_h[i] 与 anchor_h[j], i != j）
-    neg_sim_global = torch.mm(anchor_h, anchor_h.t()) / cls.temperature  # (batch_size, batch_size)
+    neg_sim_global = torch.mm(anchor_h_norm, anchor_h_norm.t()) / cls.temperature  # (batch_size, batch_size)
     
     # 将对角线位置设为负无穷
-    eye_mask_global = torch.eye(batch_size, device=anchor_h.device, dtype=torch.bool)
+    eye_mask_global = torch.eye(batch_size, device=anchor_h_norm.device, dtype=torch.bool)
     neg_sim_global = neg_sim_global.masked_fill(eye_mask_global, float('-inf'))
     
     # 数值稳定性保护
@@ -607,15 +562,16 @@ def prism_decomp_forward(cls,
     cos_sim_global = torch.cat([pos_sim_global, neg_sim_global], dim=1)  # (batch_size, batch_size + 1)
     
     # 标签：第一列（索引0）是正样本对
-    labels_global = torch.zeros(batch_size, dtype=torch.long, device=anchor_h.device)
+    labels_global = torch.zeros(batch_size, dtype=torch.long, device=anchor_h_norm.device)
     
     # 计算综合语义InfoNCE损失
     global_infonce_loss = loss_fct(cos_sim_global, labels_global)
     
     # ========== 总损失 ==========
-    # L = λ_semantic * 平均(所有子语义InfoNCE) + 综合语义InfoNCE + λ₂ * L_orthogonal
-    # 使用lambda_semantic降低子语义InfoNCE的权重，防止过拟合，让综合语义InfoNCE起主导作用
-    total_loss = cls.lambda_semantic * avg_semantic_infonce_loss + global_infonce_loss + cls.lambda2 * orth_loss
+    # L = 综合语义InfoNCE + λ₂ * L_orthogonal
+    # 移除子语义InfoNCE损失，避免训练目标冲突，让模型专注于整体表示学习
+    # 子语义分解仍通过软正交约束保持独立性
+    total_loss = global_infonce_loss + cls.lambda2 * orth_loss
     
     # 使用正样本h+作为输出表示
     logits = h_plus
@@ -693,19 +649,19 @@ def sentemb_forward(
     
     # 多语义SPR处理（仅前向传播，不计算损失）
     with torch.no_grad():
-        # 归一化句子表示
-        sentence_repr_norm = F.normalize(sentence_repr, p=2, dim=-1)
-        
+        # 不提前归一化，保持原始信号
         # 获取所有子语义h_i和h_i+
         h_i_list, h_i_plus_list, _ = cls.multisemantic_spr(
-            sentence_repr_norm,
+            sentence_repr,
             compute_orth_loss=False,
             return_all_semantics=True
         )
         
         # 使用注意力融合器融合所有子语义h_i+，得到综合语义表示h+
-        pooler_output = cls.attention_fusion(sentence_repr_norm, h_i_plus_list)
-        # h_plus已经是归一化的
+        pooler_output = cls.attention_fusion(sentence_repr, h_i_plus_list)
+        
+        # 归一化最终输出用于评估（余弦相似度需要归一化）
+        pooler_output = F.normalize(pooler_output, p=2, dim=-1)
 
     if not return_dict:
         return (outputs[0], pooler_output) + outputs[2:]
@@ -732,12 +688,11 @@ class BertForPrismDecomp(BertPreTrainedModel):
         self.model_args = model_kargs["model_args"]
         self.bert = BertModel(config)
 
-        # 从model_args获取温度参数、lambda2参数和lambda_semantic参数
+        # 从model_args获取温度参数和lambda2参数
         temperature = getattr(self.model_args, 'temperature', 0.05) if self.model_args else 0.05
-        lambda2 = getattr(self.model_args, 'lambda2', 0.01) if self.model_args else 0.01
-        lambda_semantic = getattr(self.model_args, 'lambda_semantic', 0.3) if self.model_args else 0.3
+        lambda2 = getattr(self.model_args, 'lambda2', 0.1) if self.model_args else 0.1
         
-        prism_decomp_init(self, config, temperature=temperature, lambda2=lambda2, lambda_semantic=lambda_semantic)
+        prism_decomp_init(self, config, temperature=temperature, lambda2=lambda2)
 
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
