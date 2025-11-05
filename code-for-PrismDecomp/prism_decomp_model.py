@@ -210,91 +210,43 @@ class SPR_Module(nn.Module):
         return p
 
 
-class AttentionFusion(nn.Module):
+class ConcatProjectionFusion(nn.Module):
     """
-    注意力融合器：使用多头注意力机制融合子语义表示
-    最大化保留各个子语义信息，生成融合后的句子增强语义表示h+
+    拼接投影融合器：使用拼接+单层投影的方式融合子语义表示
+    简化设计，减少参数，提高训练稳定性
     """
-    def __init__(self, hidden_dim: int, num_semantics: int = 7, num_heads: int = 8):
+    def __init__(self, hidden_dim: int, num_semantics: int = 7):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.num_semantics = num_semantics
-        self.num_heads = num_heads
         
-        # 多头注意力机制
-        # 使用query作为原始句子表示h，key和value作为子语义表示h_i+
-        self.multihead_attn = nn.MultiheadAttention(
-            embed_dim=hidden_dim,
-            num_heads=num_heads,
-            dropout=0.1,
-            batch_first=False  # PyTorch MultiheadAttention默认使用(batch, seq, features)
-        )
-        
-        # 层归一化
-        self.layer_norm = nn.LayerNorm(hidden_dim)
-        
-        # 输出投影层
-        self.output_proj = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim)
-        )
+        # 单层线性投影：从 (num_semantics * hidden_dim) 到 hidden_dim
+        self.projection = nn.Linear(num_semantics * hidden_dim, hidden_dim)
         
         # 初始化权重
         self._init_weights()
     
     def _init_weights(self):
-        """初始化权重"""
+        """初始化投影层权重"""
         with torch.no_grad():
-            # 输出投影层使用Xavier初始化
-            for layer in self.output_proj:
-                if isinstance(layer, nn.Linear):
-                    nn.init.xavier_uniform_(layer.weight)
-                    if layer.bias is not None:
-                        nn.init.zeros_(layer.bias)
+            nn.init.xavier_uniform_(self.projection.weight)
+            if self.projection.bias is not None:
+                nn.init.zeros_(self.projection.bias)
     
     def forward(self, h, h_i_plus_list):
         """
-        使用注意力机制融合子语义表示
+        使用拼接+单层投影的方式融合子语义表示
         Args:
-            h: (batch_size, hidden_dim) 原始句子表示，作为query
+            h: (batch_size, hidden_dim) 原始句子表示（保留用于接口兼容性，实际不使用）
             h_i_plus_list: list of (batch_size, hidden_dim) 投影预测后的子语义表示列表
         Returns:
             h_plus: (batch_size, hidden_dim) 融合后的句子增强语义表示
         """
-        batch_size = h.size(0)
+        # 拼接所有子语义表示
+        h_i_plus_concat = torch.cat(h_i_plus_list, dim=-1)  # (batch_size, num_semantics * hidden_dim)
         
-        # 将h_i_plus_list转换为tensor: (num_semantics, batch_size, hidden_dim)
-        # PyTorch MultiheadAttention需要(seq_len, batch, features)格式
-        h_i_plus_tensor = torch.stack(h_i_plus_list, dim=0)  # (num_semantics, batch_size, hidden_dim)
-        
-        # 将h转换为query格式: (1, batch_size, hidden_dim)
-        # 使用h作为query，从所有子语义h_i+中提取信息
-        h_query = h.unsqueeze(0)  # (1, batch_size, hidden_dim)
-        
-        # 多头注意力融合
-        # query: h (原始句子表示)
-        # key, value: h_i+ (所有子语义表示)
-        # 这样可以让原始表示h从各个子语义中提取信息，最大化保留各子语义
-        attn_output, attn_weights = self.multihead_attn(
-            query=h_query,
-            key=h_i_plus_tensor,
-            value=h_i_plus_tensor
-        )
-        # attn_output: (1, batch_size, hidden_dim)
-        # attn_weights: (batch_size, 1, num_semantics) 注意力权重，显示各子语义的贡献
-        
-        # 移除seq维度
-        attn_output = attn_output.squeeze(0)  # (batch_size, hidden_dim)
-        
-        # 残差连接：h + attention_output
-        fused = h + attn_output
-        
-        # 层归一化
-        fused = self.layer_norm(fused)
-        
-        # 输出投影
-        h_plus = self.output_proj(fused)
+        # 单层线性投影
+        h_plus = self.projection(h_i_plus_concat)  # (batch_size, hidden_dim)
         
         # 不提前归一化，保持原始信号，只在计算相似度时归一化
         
@@ -405,39 +357,46 @@ class MultiSemanticSPR(nn.Module):
             return None, orth_loss
 
 
-def prism_decomp_init(cls, config, temperature=0.05, lambda2=0.1):
+def prism_decomp_init(cls, config, temperature=0.05, lambda2=0.1, num_semantics=7):
     """
     棱镜分解模型初始化函数
     Args:
         config: 模型配置
         temperature: InfoNCE损失的温度参数（默认0.05）
         lambda2: 软正交损失权重（默认0.1）
+        num_semantics: 语义维度数量（默认7，从配置文件读取）
     """
     # 初始化多语义SPR模块，用于生成正样本h+
     cls.multisemantic_spr = MultiSemanticSPR(
         config.hidden_size, 
-        num_semantics=7,
+        num_semantics=num_semantics,
         lambda2=lambda2  # λ₂: 软正交权重
     )
     
-    # 初始化注意力融合器，用于融合子语义表示
-    cls.attention_fusion = AttentionFusion(
+    # 初始化拼接投影融合器，用于融合子语义表示
+    cls.attention_fusion = ConcatProjectionFusion(
         hidden_dim=config.hidden_size,
-        num_semantics=7,
-        num_heads=8
+        num_semantics=num_semantics
     )
     
     # 初始化相似度计算模块（用于InfoNCE损失）
     cls.similarity = Similarity(temp=temperature)
     
-    # 设置语义维度数量
-    cls.num_semantics = 7
+    # 设置语义维度数量（从配置文件读取）
+    cls.num_semantics = num_semantics
     
-    # 定义7个语义维度
-    cls.semantic_dimensions = [
+    # 定义语义维度（根据num_semantics动态生成）
+    # 如果num_semantics <= 7，使用预定义的名称；否则使用通用名称
+    predefined_dimensions = [
         "情感语义", "主题语义", "语法语义", 
         "时序语义", "空间语义", "因果语义", "程度语义"
     ]
+    if num_semantics <= len(predefined_dimensions):
+        cls.semantic_dimensions = predefined_dimensions[:num_semantics]
+    else:
+        cls.semantic_dimensions = predefined_dimensions + [
+            f"语义维度{i+1}" for i in range(len(predefined_dimensions), num_semantics)
+        ]
     
     # 存储损失函数权重
     cls.lambda2 = lambda2
@@ -688,11 +647,12 @@ class BertForPrismDecomp(BertPreTrainedModel):
         self.model_args = model_kargs["model_args"]
         self.bert = BertModel(config)
 
-        # 从model_args获取温度参数和lambda2参数
+        # 从model_args获取温度参数、lambda2参数和num_semantics参数
         temperature = getattr(self.model_args, 'temperature', 0.05) if self.model_args else 0.05
         lambda2 = getattr(self.model_args, 'lambda2', 0.1) if self.model_args else 0.1
+        num_semantics = getattr(self.model_args, 'num_semantics', 7) if self.model_args else 7
         
-        prism_decomp_init(self, config, temperature=temperature, lambda2=lambda2)
+        prism_decomp_init(self, config, temperature=temperature, lambda2=lambda2, num_semantics=num_semantics)
 
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
