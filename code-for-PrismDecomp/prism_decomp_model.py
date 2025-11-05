@@ -107,7 +107,7 @@ class SemanticDecomposer(nn.Module):
         semantic_reprs = decomposed.view(-1, self.num_semantics, self.hidden_dim)
         
         # 应用层归一化
-        semantic_reprs = self.layer_norm(semantic_reprs)
+        # semantic_reprs = self.layer_norm(semantic_reprs)
         
         # 应用激活函数
         semantic_reprs = self.activation(semantic_reprs)
@@ -156,10 +156,10 @@ class SPR_Module(nn.Module):
         p = self.prediction(z)
         
         # Step 3: 归一化表示
-        p_norm = F.normalize(p, p=2, dim=-1)
+        # p_norm = F.normalize(p, p=2, dim=-1)
         
         # 返回归一化后的预测结果作为处理后的表示
-        return p_norm
+        return p
 
 
 class Similarity(nn.Module):
