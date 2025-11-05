@@ -409,13 +409,14 @@ class MultiSemanticSPR(nn.Module):
             return None, orth_loss
 
 
-def prism_decomp_init(cls, config, temperature=0.05, lambda2=0.01):
+def prism_decomp_init(cls, config, temperature=0.05, lambda2=0.01, lambda_semantic=0.3):
     """
     棱镜分解模型初始化函数
     Args:
         config: 模型配置
         temperature: InfoNCE损失的温度参数（默认0.05）
         lambda2: 软正交损失权重（默认0.01）
+        lambda_semantic: 子语义InfoNCE损失权重（默认0.3），用于平衡子语义和综合语义损失
     """
     # 初始化多语义SPR模块，用于生成正样本h+
     cls.multisemantic_spr = MultiSemanticSPR(
@@ -446,6 +447,7 @@ def prism_decomp_init(cls, config, temperature=0.05, lambda2=0.01):
     # 存储损失函数权重
     cls.lambda2 = lambda2
     cls.temperature = temperature
+    cls.lambda_semantic = lambda_semantic  # 子语义InfoNCE损失权重
     
     cls.init_weights()
 
@@ -611,8 +613,9 @@ def prism_decomp_forward(cls,
     global_infonce_loss = loss_fct(cos_sim_global, labels_global)
     
     # ========== 总损失 ==========
-    # L = 平均(所有子语义InfoNCE) + 综合语义InfoNCE + λ₂ * L_orthogonal
-    total_loss = avg_semantic_infonce_loss + global_infonce_loss + cls.lambda2 * orth_loss
+    # L = λ_semantic * 平均(所有子语义InfoNCE) + 综合语义InfoNCE + λ₂ * L_orthogonal
+    # 使用lambda_semantic降低子语义InfoNCE的权重，防止过拟合，让综合语义InfoNCE起主导作用
+    total_loss = cls.lambda_semantic * avg_semantic_infonce_loss + global_infonce_loss + cls.lambda2 * orth_loss
     
     # 使用正样本h+作为输出表示
     logits = h_plus
@@ -729,11 +732,12 @@ class BertForPrismDecomp(BertPreTrainedModel):
         self.model_args = model_kargs["model_args"]
         self.bert = BertModel(config)
 
-        # 从model_args获取温度参数和lambda2参数
+        # 从model_args获取温度参数、lambda2参数和lambda_semantic参数
         temperature = getattr(self.model_args, 'temperature', 0.05) if self.model_args else 0.05
         lambda2 = getattr(self.model_args, 'lambda2', 0.01) if self.model_args else 0.01
+        lambda_semantic = getattr(self.model_args, 'lambda_semantic', 0.3) if self.model_args else 0.3
         
-        prism_decomp_init(self, config, temperature=temperature, lambda2=lambda2)
+        prism_decomp_init(self, config, temperature=temperature, lambda2=lambda2, lambda_semantic=lambda_semantic)
 
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):

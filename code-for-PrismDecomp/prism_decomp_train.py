@@ -124,6 +124,12 @@ class ModelArguments:
             "help": "Weight for soft orthogonal loss (default: 0.01)"
         }
     )
+    lambda_semantic: float = field(
+        default=0.3,
+        metadata={
+            "help": "Weight for semantic-level InfoNCE loss (default: 0.3). Lower values help prevent overfitting by reducing emphasis on semantic-level details."
+        }
+    )
     
     # Template arguments
     mask_embedding_sentence: bool = field(

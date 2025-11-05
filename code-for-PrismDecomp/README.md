@@ -84,14 +84,19 @@ code-for-PrismDecomp/
 
 ### 损失函数公式
 ```
-L = (1/7) * Σ L_infonce_semantic_i + L_infonce_global + λ₂ ||H^T H - I||_F²
+L = λ_semantic * (1/7) * Σ L_infonce_semantic_i + L_infonce_global + λ₂ ||H^T H - I||_F²
 ```
 
 其中：
 - **L_infonce_semantic_i**: 第i个子语义的InfoNCE损失（i = 0, 1, ..., 6）
 - **L_infonce_global**: 综合语义的InfoNCE损失
+- **λ_semantic**: 子语义InfoNCE损失权重（默认0.3），用于平衡子语义和综合语义损失，防止过拟合
 - **λ₂**: 软正交权重（通常选λ₂ ∈ [0.01, 0.1]）
 - **||H^T H - I||_F²**: 语义子空间软正交约束
+
+**权重设计说明**：
+- 使用 `λ_semantic` 降低子语义InfoNCE的权重，让综合语义InfoNCE起主导作用
+- 这有助于防止模型过度关注细节而导致过拟合，提高泛化性能
 
 ### 损失函数组件
 
@@ -123,6 +128,9 @@ L = (1/7) * Σ L_infonce_semantic_i + L_infonce_global + λ₂ ||H^T H - I||_F²
 
 ### 权重参数选择
 - **τ = 0.05**：InfoNCE温度参数，控制对比学习的难易程度
+- **λ_semantic = 0.3**：子语义InfoNCE损失权重，降低对细节的关注，防止过拟合
+  - 如果评估指标持续下降，可以进一步降低（如0.2或0.1）
+  - 如果子语义学习不足，可以适当提高（如0.5或0.7）
 - **λ₂ = 0.01**：软正交权重，保持轻度正交，防止子语义完全脱耦
 
 ## 核心组件
@@ -225,8 +233,9 @@ bash evaluation.sh
 - `train_file`: 训练数据文件
 - `output_dir`: 输出目录
 - `num_semantics`: 语义维度数量（默认7）
-- `orthogonal_constraint`: 是否使用正交约束
-- `semantic_weights_learnable`: 语义权重是否可学习
+- `temperature`: InfoNCE损失温度参数（默认0.05）
+- `lambda2`: 软正交损失权重（默认0.01）
+- `lambda_semantic`: 子语义InfoNCE损失权重（默认0.3），用于防止过拟合
 
 ### 评估配置
 - `model_name_or_path`: 训练好的模型路径
