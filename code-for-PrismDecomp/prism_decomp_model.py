@@ -118,6 +118,54 @@ class SemanticDecomposer(nn.Module):
         return semantic_reprs, orth_loss
 
 
+class SignalEnhancer(nn.Module):
+    """
+    信号增强模块：对每个子语义h_i进行信号增强
+    增强弱信号，防止信号弱的语义被忽略
+    实现：h_i_enhanced = h_i * learnable_weight + residual_connection
+    """
+    def __init__(self, hidden_dim: int):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        
+        # 可学习的增强权重
+        self.enhance_weight = nn.Parameter(torch.ones(1))
+        
+        # 残差连接层，用于增强信号
+        self.residual = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim)
+        )
+        
+        # 初始化权重
+        self._init_weights()
+    
+    def _init_weights(self):
+        """初始化权重"""
+        with torch.no_grad():
+            # 增强权重初始化为1.0（不改变原始信号）
+            self.enhance_weight.fill_(1.0)
+            # 残差层使用Xavier初始化
+            for layer in self.residual:
+                if isinstance(layer, nn.Linear):
+                    nn.init.xavier_uniform_(layer.weight)
+                    if layer.bias is not None:
+                        nn.init.zeros_(layer.bias)
+    
+    def forward(self, h_i):
+        """
+        对子语义表示进行信号增强
+        Args:
+            h_i: (batch_size, hidden_dim) 子语义表示
+        Returns:
+            h_i_enhanced: (batch_size, hidden_dim) 增强后的子语义表示
+        """
+        # 信号增强：h_i_enhanced = h_i * learnable_weight + residual(h_i)
+        enhanced = h_i * self.enhance_weight + self.residual(h_i)
+        return enhanced
+
+
 class SPR_Module(nn.Module):
     """
     投影预测模块：对子语义表示进行投影和预测
@@ -162,6 +210,98 @@ class SPR_Module(nn.Module):
         return p
 
 
+class AttentionFusion(nn.Module):
+    """
+    注意力融合器：使用多头注意力机制融合子语义表示
+    最大化保留各个子语义信息，生成融合后的句子增强语义表示h+
+    """
+    def __init__(self, hidden_dim: int, num_semantics: int = 7, num_heads: int = 8):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.num_semantics = num_semantics
+        self.num_heads = num_heads
+        
+        # 多头注意力机制
+        # 使用query作为原始句子表示h，key和value作为子语义表示h_i+
+        self.multihead_attn = nn.MultiheadAttention(
+            embed_dim=hidden_dim,
+            num_heads=num_heads,
+            dropout=0.1,
+            batch_first=False  # PyTorch MultiheadAttention默认使用(batch, seq, features)
+        )
+        
+        # 层归一化
+        self.layer_norm = nn.LayerNorm(hidden_dim)
+        
+        # 输出投影层
+        self.output_proj = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim)
+        )
+        
+        # 初始化权重
+        self._init_weights()
+    
+    def _init_weights(self):
+        """初始化权重"""
+        with torch.no_grad():
+            # 输出投影层使用Xavier初始化
+            for layer in self.output_proj:
+                if isinstance(layer, nn.Linear):
+                    nn.init.xavier_uniform_(layer.weight)
+                    if layer.bias is not None:
+                        nn.init.zeros_(layer.bias)
+    
+    def forward(self, h, h_i_plus_list):
+        """
+        使用注意力机制融合子语义表示
+        Args:
+            h: (batch_size, hidden_dim) 原始句子表示，作为query
+            h_i_plus_list: list of (batch_size, hidden_dim) 投影预测后的子语义表示列表
+        Returns:
+            h_plus: (batch_size, hidden_dim) 融合后的句子增强语义表示
+        """
+        batch_size = h.size(0)
+        
+        # 将h_i_plus_list转换为tensor: (num_semantics, batch_size, hidden_dim)
+        # PyTorch MultiheadAttention需要(seq_len, batch, features)格式
+        h_i_plus_tensor = torch.stack(h_i_plus_list, dim=0)  # (num_semantics, batch_size, hidden_dim)
+        
+        # 将h转换为query格式: (1, batch_size, hidden_dim)
+        # 使用h作为query，从所有子语义h_i+中提取信息
+        h_query = h.unsqueeze(0)  # (1, batch_size, hidden_dim)
+        
+        # 多头注意力融合
+        # query: h (原始句子表示)
+        # key, value: h_i+ (所有子语义表示)
+        # 这样可以让原始表示h从各个子语义中提取信息，最大化保留各子语义
+        attn_output, attn_weights = self.multihead_attn(
+            query=h_query,
+            key=h_i_plus_tensor,
+            value=h_i_plus_tensor
+        )
+        # attn_output: (1, batch_size, hidden_dim)
+        # attn_weights: (batch_size, 1, num_semantics) 注意力权重，显示各子语义的贡献
+        
+        # 移除seq维度
+        attn_output = attn_output.squeeze(0)  # (batch_size, hidden_dim)
+        
+        # 残差连接：h + attention_output
+        fused = h + attn_output
+        
+        # 层归一化
+        fused = self.layer_norm(fused)
+        
+        # 输出投影
+        h_plus = self.output_proj(fused)
+        
+        # 归一化最终表示，便于余弦相似度计算
+        h_plus = F.normalize(h_plus, p=2, dim=-1)
+        
+        return h_plus
+
+
 class Similarity(nn.Module):
     """
     相似度计算模块：用于InfoNCE损失
@@ -178,7 +318,7 @@ class Similarity(nn.Module):
 
 class MultiSemanticSPR(nn.Module):
     """
-    多语义SPR模型：结合语义分解和并行投影预测处理
+    多语义SPR模型：结合语义分解、信号增强和并行投影预测处理
     生成正样本h+用于InfoNCE对比学习
     """
     def __init__(self, hidden_dim: int, num_semantics: int = 7, lambda2: float = 0.01):
@@ -190,47 +330,64 @@ class MultiSemanticSPR(nn.Module):
         # 语义分解器
         self.decomposer = SemanticDecomposer(hidden_dim, num_semantics)
         
+        # 7个并行的信号增强模块
+        self.signal_enhancers = nn.ModuleList([
+            SignalEnhancer(hidden_dim) for _ in range(num_semantics)
+        ])
+        
         # 7个并行的投影预测模块
         self.spr_modules = nn.ModuleList([
             SPR_Module(hidden_dim) for _ in range(num_semantics)
         ])
-        
-        # 融合层
-        self.fusion_layer = nn.Sequential(
-            nn.Linear(num_semantics * hidden_dim, hidden_dim * 2),
-            nn.ReLU(),
-            nn.Linear(hidden_dim * 2, hidden_dim)
-        )
     
-    def forward(self, sentence_repr, compute_orth_loss=True):
+    def forward(self, sentence_repr, compute_orth_loss=True, return_all_semantics=False):
         """
         多语义投影预测前向传播
         生成正样本h+和计算软正交损失
         Args:
             sentence_repr: (batch_size, hidden_dim) 锚点样本h
             compute_orth_loss: 是否计算软正交损失，默认True（训练时），False（评估时）
+            return_all_semantics: 是否返回所有子语义h_i和h_i+，默认False
         Returns:
             h_plus: (batch_size, hidden_dim) 融合后的正样本表示（归一化）
             orth_loss: 软正交损失
+            如果return_all_semantics=True，还返回：
+            h_i_list: list of (batch_size, hidden_dim) 所有子语义h_i
+            h_i_plus_list: list of (batch_size, hidden_dim) 所有子语义h_i+
         """
         # 分解为多个语义表示，获取软正交损失
         semantic_reprs, orth_loss = self.decomposer(sentence_repr, compute_orth_loss=compute_orth_loss)
+        # semantic_reprs: (batch_size, num_semantics, hidden_dim)
         
-        # 并行投影预测处理
-        processed_reprs = []
-        for i, spr_module in enumerate(self.spr_modules):
-            # 对每个语义表示进行投影预测处理
-            # h_i -> z_i = f_proj(h_i) -> p_i = f_pred(z_i)
-            processed_repr = spr_module(semantic_reprs[:, i])
-            processed_reprs.append(processed_repr)
+        # 存储所有子语义h_i和h_i+
+        h_i_list = []
+        h_i_plus_list = []
         
-        # 融合处理后的表示
-        fused_repr = torch.cat(processed_reprs, dim=-1)
-        h_plus = self.fusion_layer(fused_repr)
-        # 归一化最终表示，便于余弦相似度计算
-        h_plus = F.normalize(h_plus, p=2, dim=-1)
+        # 对每个子语义进行信号增强和投影预测处理
+        for i in range(self.num_semantics):
+            # 提取第i个子语义 h_i: (batch_size, hidden_dim)
+            h_i = semantic_reprs[:, i]
+            
+            # 信号增强：h_i -> h_i_enhanced
+            h_i_enhanced = self.signal_enhancers[i](h_i)
+            
+            # 投影预测：h_i_enhanced -> h_i+
+            h_i_plus = self.spr_modules[i](h_i_enhanced)
+            
+            # 归一化h_i和h_i+，便于后续InfoNCE计算
+            h_i = F.normalize(h_i, p=2, dim=-1)
+            h_i_plus = F.normalize(h_i_plus, p=2, dim=-1)
+            
+            # 存储
+            h_i_list.append(h_i)
+            h_i_plus_list.append(h_i_plus)
         
-        return h_plus, orth_loss
+        if return_all_semantics:
+            # 返回所有子语义信息（用于子语义InfoNCE损失计算）
+            return h_i_list, h_i_plus_list, orth_loss
+        else:
+            # 为了兼容性，返回None（融合将在AttentionFusion中完成）
+            return None, orth_loss
 
 
 def prism_decomp_init(cls, config, temperature=0.05, lambda2=0.01):
@@ -246,6 +403,13 @@ def prism_decomp_init(cls, config, temperature=0.05, lambda2=0.01):
         config.hidden_size, 
         num_semantics=7,
         lambda2=lambda2  # λ₂: 软正交权重
+    )
+    
+    # 初始化注意力融合器，用于融合子语义表示
+    cls.attention_fusion = AttentionFusion(
+        hidden_dim=config.hidden_size,
+        num_semantics=7,
+        num_heads=8
     )
     
     # 初始化相似度计算模块（用于InfoNCE损失）
@@ -344,50 +508,92 @@ def prism_decomp_forward(cls,
     # 归一化锚点样本
     anchor_h = F.normalize(anchor_h, p=2, dim=-1)
     
-    # 通过多语义SPR生成正样本h+
-    # h+ = 融合(投影预测(分解(h)))
-    h_plus, orth_loss = cls.multisemantic_spr(anchor_h)
+    # 通过多语义SPR获取所有子语义h_i和h_i+
+    # h_i_list: list of (batch_size, hidden_dim) 所有子语义h_i
+    # h_i_plus_list: list of (batch_size, hidden_dim) 所有子语义h_i+
+    h_i_list, h_i_plus_list, orth_loss = cls.multisemantic_spr(
+        anchor_h, 
+        compute_orth_loss=True, 
+        return_all_semantics=True
+    )
     
-    # 计算InfoNCE损失
-    # 正样本对：anchor_h[i] 与 h_plus[i]
-    # 负样本对：anchor_h[i] 与 anchor_h[j]（i != j，批次内其他样本的锚点）
+    # 使用注意力融合器融合所有子语义h_i+，得到综合语义表示h+
+    h_plus = cls.attention_fusion(anchor_h, h_i_plus_list)  # (batch_size, hidden_dim)
     
-    # 构建相似度矩阵：(batch_size, batch_size + 1)
-    # 第一列：正样本对相似度（anchor_h[i] 与 h_plus[i]）
-    # 后续列：负样本对相似度（anchor_h[i] 与 anchor_h[j]）
+    # ========== 计算子语义InfoNCE损失 ==========
+    # 对每个子语义维度i（0-6）：
+    # - 锚点：h_i[batch_idx]
+    # - 正样本：h_i+[batch_idx]
+    # - 负样本：批次内其他句子的对应子语义h_i[j] (j != batch_idx)
     
-    # 由于anchor_h和h_plus都已归一化，直接计算点积并应用温度
+    loss_fct = nn.CrossEntropyLoss()
+    semantic_infonce_losses = []
+    
+    for i in range(cls.num_semantics):
+        h_i = h_i_list[i]  # (batch_size, hidden_dim)
+        h_i_plus = h_i_plus_list[i]  # (batch_size, hidden_dim)
+        
+        # 计算正样本对相似度（h_i[j] 与 h_i+[j]）
+        pos_sim = (h_i * h_i_plus).sum(dim=-1, keepdim=True) / cls.temperature  # (batch_size, 1)
+        pos_sim = torch.clamp(pos_sim, min=-50.0, max=50.0)
+        
+        # 计算负样本对相似度（h_i[j] 与 h_i[k], k != j）
+        # 使用批次内其他句子的对应子语义h_i作为负样本
+        neg_sim = torch.mm(h_i, h_i.t()) / cls.temperature  # (batch_size, batch_size)
+        
+        # 将对角线位置设为负无穷（排除自己作为负样本）
+        eye_mask = torch.eye(batch_size, device=h_i.device, dtype=torch.bool)
+        neg_sim = neg_sim.masked_fill(eye_mask, float('-inf'))
+        
+        # 数值稳定性保护
+        neg_sim = torch.clamp(neg_sim, min=-50.0, max=50.0)
+        neg_sim = neg_sim.masked_fill(eye_mask, float('-inf'))
+        
+        # 组合相似度矩阵：[正样本对, 负样本对]
+        cos_sim = torch.cat([pos_sim, neg_sim], dim=1)  # (batch_size, batch_size + 1)
+        
+        # 标签：第一列（索引0）是正样本对
+        labels = torch.zeros(batch_size, dtype=torch.long, device=h_i.device)
+        
+        # 计算InfoNCE损失
+        semantic_infonce_loss = loss_fct(cos_sim, labels)
+        semantic_infonce_losses.append(semantic_infonce_loss)
+    
+    # 平均所有子语义的InfoNCE损失
+    avg_semantic_infonce_loss = torch.stack(semantic_infonce_losses).mean()
+    
+    # ========== 计算综合语义InfoNCE损失 ==========
+    # - 锚点：h[batch_idx]
+    # - 正样本：h+[batch_idx]（注意力融合后的结果）
+    # - 负样本：批次内其他句子的h[j] (j != batch_idx)
+    
     # 计算正样本对相似度（anchor_h[i] 与 h_plus[i]）
-    pos_sim = (anchor_h * h_plus).sum(dim=-1, keepdim=True) / cls.temperature  # (batch_size, 1)
+    pos_sim_global = (anchor_h * h_plus).sum(dim=-1, keepdim=True) / cls.temperature  # (batch_size, 1)
+    pos_sim_global = torch.clamp(pos_sim_global, min=-50.0, max=50.0)
     
     # 计算负样本对相似度（anchor_h[i] 与 anchor_h[j], i != j）
-    # 使用anchor_h作为负样本（批次内其他样本的锚点）
-    # 由于anchor_h已归一化，点积就是余弦相似度
-    neg_sim = torch.mm(anchor_h, anchor_h.t()) / cls.temperature  # (batch_size, batch_size)
+    neg_sim_global = torch.mm(anchor_h, anchor_h.t()) / cls.temperature  # (batch_size, batch_size)
     
-    # 将对角线位置设为负无穷（排除自己作为负样本）
-    # 对角线元素是anchor_h[i]与自己的相似度（=1.0），不应该作为负样本
-    # 这会导致训练目标错误：模型学习让anchor_h与自己不相似，而不是学习语义表示
-    eye_mask = torch.eye(batch_size, device=anchor_h.device, dtype=torch.bool)
-    neg_sim = neg_sim.masked_fill(eye_mask, float('-inf'))
+    # 将对角线位置设为负无穷
+    eye_mask_global = torch.eye(batch_size, device=anchor_h.device, dtype=torch.bool)
+    neg_sim_global = neg_sim_global.masked_fill(eye_mask_global, float('-inf'))
     
-    # 数值稳定性保护：防止softmax溢出
-    neg_sim = torch.clamp(neg_sim, min=-50.0, max=50.0)
-    # 注意：clamp后需要重新设置对角线（因为clamp可能会改变-inf）
-    neg_sim = neg_sim.masked_fill(eye_mask, float('-inf'))
+    # 数值稳定性保护
+    neg_sim_global = torch.clamp(neg_sim_global, min=-50.0, max=50.0)
+    neg_sim_global = neg_sim_global.masked_fill(eye_mask_global, float('-inf'))
     
     # 组合相似度矩阵：[正样本对, 负样本对]
-    cos_sim = torch.cat([pos_sim, neg_sim], dim=1)  # (batch_size, batch_size + 1)
+    cos_sim_global = torch.cat([pos_sim_global, neg_sim_global], dim=1)  # (batch_size, batch_size + 1)
     
     # 标签：第一列（索引0）是正样本对
-    labels = torch.zeros(batch_size, dtype=torch.long, device=anchor_h.device)
+    labels_global = torch.zeros(batch_size, dtype=torch.long, device=anchor_h.device)
     
-    # 计算InfoNCE损失
-    loss_fct = nn.CrossEntropyLoss()
-    infonce_loss = loss_fct(cos_sim, labels)
+    # 计算综合语义InfoNCE损失
+    global_infonce_loss = loss_fct(cos_sim_global, labels_global)
     
-    # 总损失：L = L_infonce + λ₂ * L_orthogonal
-    total_loss = infonce_loss + cls.lambda2 * orth_loss
+    # ========== 总损失 ==========
+    # L = 平均(所有子语义InfoNCE) + 综合语义InfoNCE + λ₂ * L_orthogonal
+    total_loss = avg_semantic_infonce_loss + global_infonce_loss + cls.lambda2 * orth_loss
     
     # 使用正样本h+作为输出表示
     logits = h_plus
@@ -465,9 +671,18 @@ def sentemb_forward(
     
     # 多语义SPR处理（仅前向传播，不计算损失）
     with torch.no_grad():
-        # 直接调用multisemantic_spr，无需预先归一化（内部会对最终输出归一化）
-        # 评估时跳过软正交损失计算以提高效率
-        pooler_output, _ = cls.multisemantic_spr(sentence_repr, compute_orth_loss=False)
+        # 归一化句子表示
+        sentence_repr_norm = F.normalize(sentence_repr, p=2, dim=-1)
+        
+        # 获取所有子语义h_i和h_i+
+        h_i_list, h_i_plus_list, _ = cls.multisemantic_spr(
+            sentence_repr_norm,
+            compute_orth_loss=False,
+            return_all_semantics=True
+        )
+        
+        # 使用注意力融合器融合所有子语义h_i+，得到综合语义表示h+
+        pooler_output = cls.attention_fusion(sentence_repr_norm, h_i_plus_list)
         # h_plus已经是归一化的
 
     if not return_dict:
