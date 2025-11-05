@@ -318,8 +318,14 @@ class Similarity(nn.Module):
 
 class MultiSemanticSPR(nn.Module):
     """
-    多语义SPR模型：结合语义分解、信号增强和并行投影预测处理
+    多语义SPR模型：结合全局信号增强、语义分解、局部信号增强和并行投影预测处理
     生成正样本h+用于InfoNCE对比学习
+    
+    设计流程：
+    1. encoder输出h → 全局信号增强 → h_enhanced
+    2. h_enhanced → 分解 → h_i
+    3. h_i → 局部信号增强 → h_i_enhanced
+    4. h_i_enhanced → 投影预测 → h_i+
     """
     def __init__(self, hidden_dim: int, num_semantics: int = 7, lambda2: float = 0.01):
         super().__init__()
@@ -327,11 +333,14 @@ class MultiSemanticSPR(nn.Module):
         self.num_semantics = num_semantics
         self.lambda2 = lambda2  # λ₂: 软正交权重
         
+        # 全局信号增强模块（新增）：在分解前对整体句子表示进行增强
+        self.global_signal_enhancer = SignalEnhancer(hidden_dim)
+        
         # 语义分解器
         self.decomposer = SemanticDecomposer(hidden_dim, num_semantics)
         
-        # 7个并行的信号增强模块
-        self.signal_enhancers = nn.ModuleList([
+        # 7个并行的局部信号增强模块：对分解后的每个子语义进行精细化增强
+        self.local_signal_enhancers = nn.ModuleList([
             SignalEnhancer(hidden_dim) for _ in range(num_semantics)
         ])
         
@@ -344,6 +353,13 @@ class MultiSemanticSPR(nn.Module):
         """
         多语义投影预测前向传播
         生成正样本h+和计算软正交损失
+        
+        双层增强流程：
+        1. 全局信号增强：h -> h_enhanced（增强整体句子表示）
+        2. 语义分解：h_enhanced -> h_i（分解为多个子语义）
+        3. 局部信号增强：h_i -> h_i_enhanced（对每个子语义进行精细化增强）
+        4. 投影预测：h_i_enhanced -> h_i+（生成正样本）
+        
         Args:
             sentence_repr: (batch_size, hidden_dim) 锚点样本h
             compute_orth_loss: 是否计算软正交损失，默认True（训练时），False（评估时）
@@ -352,26 +368,29 @@ class MultiSemanticSPR(nn.Module):
             h_plus: (batch_size, hidden_dim) 融合后的正样本表示（归一化）
             orth_loss: 软正交损失
             如果return_all_semantics=True，还返回：
-            h_i_list: list of (batch_size, hidden_dim) 所有子语义h_i
+            h_i_list: list of (batch_size, hidden_dim) 所有子语义h_i（分解后的原始表示）
             h_i_plus_list: list of (batch_size, hidden_dim) 所有子语义h_i+
         """
-        # 分解为多个语义表示，获取软正交损失
-        semantic_reprs, orth_loss = self.decomposer(sentence_repr, compute_orth_loss=compute_orth_loss)
+        # 步骤1：全局信号增强 - 在分解前对整体句子表示进行增强
+        h_enhanced = self.global_signal_enhancer(sentence_repr)
+        
+        # 步骤2：语义分解 - 将增强后的句子表示分解为多个语义表示，获取软正交损失
+        semantic_reprs, orth_loss = self.decomposer(h_enhanced, compute_orth_loss=compute_orth_loss)
         # semantic_reprs: (batch_size, num_semantics, hidden_dim)
         
         # 存储所有子语义h_i和h_i+
         h_i_list = []
         h_i_plus_list = []
         
-        # 对每个子语义进行信号增强和投影预测处理
+        # 步骤3和4：对每个子语义进行局部增强和投影预测处理
         for i in range(self.num_semantics):
             # 提取第i个子语义 h_i: (batch_size, hidden_dim)
             h_i = semantic_reprs[:, i]
             
-            # 信号增强：h_i -> h_i_enhanced
-            h_i_enhanced = self.signal_enhancers[i](h_i)
+            # 步骤3：局部信号增强 - 对每个子语义进行精细化增强
+            h_i_enhanced = self.local_signal_enhancers[i](h_i)
             
-            # 投影预测：h_i_enhanced -> h_i+
+            # 步骤4：投影预测 - 生成正样本h_i+
             h_i_plus = self.spr_modules[i](h_i_enhanced)
             
             # 归一化h_i和h_i+，便于后续InfoNCE计算

@@ -19,7 +19,7 @@ save_total_limit: 1        # 只保留最新的1个模型（即当前最佳模�
 
 overwrite_output_dir: true
 do_train: true
-fp16: true
+fp16: false
 preprocessing_num_workers: 10
 use_mps_device: false
 dataloader_drop_last: true
