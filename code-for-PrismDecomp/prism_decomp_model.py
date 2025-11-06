@@ -210,43 +210,56 @@ class SPR_Module(nn.Module):
         return p
 
 
-class ConcatProjectionFusion(nn.Module):
+class ResidualFusion(nn.Module):
     """
-    拼接投影融合器：使用拼接+单层投影的方式融合子语义表示
-    简化设计，减少参数，提高训练稳定性
+    残差融合器：将所有增强后的子语义与原始h进行残差连接
+    直接放大子语义信号，保留原始信息
+    
+    实现：h+ = h + α * sum(w_i * h_i_enhanced)
+    其中w_i是可学习的权重，α是融合权重
     """
-    def __init__(self, hidden_dim: int, num_semantics: int = 7):
+    def __init__(self, hidden_dim: int, num_semantics: int = 7, fusion_weight: float = 0.5):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.num_semantics = num_semantics
         
-        # 单层线性投影：从 (num_semantics * hidden_dim) 到 hidden_dim
-        self.projection = nn.Linear(num_semantics * hidden_dim, hidden_dim)
+        # 可学习的子语义权重：每个子语义的重要性
+        self.semantic_weights = nn.Parameter(torch.ones(num_semantics) / num_semantics)
+        
+        # 融合权重：控制残差连接的强度
+        self.fusion_weight = nn.Parameter(torch.tensor(fusion_weight))
         
         # 初始化权重
         self._init_weights()
     
     def _init_weights(self):
-        """初始化投影层权重"""
+        """初始化权重"""
         with torch.no_grad():
-            nn.init.xavier_uniform_(self.projection.weight)
-            if self.projection.bias is not None:
-                nn.init.zeros_(self.projection.bias)
+            # 子语义权重初始化为均匀分布
+            self.semantic_weights.fill_(1.0 / self.num_semantics)
+            # 融合权重初始化为给定值
+            self.fusion_weight.fill_(0.5)
     
-    def forward(self, h, h_i_plus_list):
+    def forward(self, h, h_i_enhanced_list):
         """
-        使用拼接+单层投影的方式融合子语义表示
+        残差融合：将增强后的子语义与原始h进行残差连接
         Args:
-            h: (batch_size, hidden_dim) 原始句子表示（保留用于接口兼容性，实际不使用）
-            h_i_plus_list: list of (batch_size, hidden_dim) 投影预测后的子语义表示列表
+            h: (batch_size, hidden_dim) 原始句子表示
+            h_i_enhanced_list: list of (batch_size, hidden_dim) 增强后的子语义表示列表
         Returns:
             h_plus: (batch_size, hidden_dim) 融合后的句子增强语义表示
         """
-        # 拼接所有子语义表示
-        h_i_plus_concat = torch.cat(h_i_plus_list, dim=-1)  # (batch_size, num_semantics * hidden_dim)
+        # 对子语义权重应用softmax归一化
+        weights = F.softmax(self.semantic_weights, dim=0)  # (num_semantics,)
         
-        # 单层线性投影
-        h_plus = self.projection(h_i_plus_concat)  # (batch_size, hidden_dim)
+        # 加权融合所有增强后的子语义
+        fused_semantics = torch.zeros_like(h)  # (batch_size, hidden_dim)
+        for i, h_i_enhanced in enumerate(h_i_enhanced_list):
+            fused_semantics += weights[i] * h_i_enhanced
+        
+        # 残差连接：h+ = h + α * fused_semantics
+        # 通过残差连接放大子语义信号，同时保留原始h的信息
+        h_plus = h + torch.clamp(self.fusion_weight, 0.0, 2.0) * fused_semantics
         
         # 不提前归一化，保持原始信号，只在计算相似度时归一化
         
@@ -269,14 +282,12 @@ class Similarity(nn.Module):
 
 class MultiSemanticSPR(nn.Module):
     """
-    多语义SPR模型：结合全局信号增强、语义分解、局部信号增强和并行投影预测处理
-    生成正样本h+用于InfoNCE对比学习
+    多语义分解增强模型：语义分解 + 局部信号增强
+    生成增强后的子语义用于残差融合
     
-    设计流程：
-    1. encoder输出h → 全局信号增强 → h_enhanced
-    2. h_enhanced → 分解 → h_i
-    3. h_i → 局部信号增强 → h_i_enhanced
-    4. h_i_enhanced → 投影预测 → h_i+
+    简化设计流程：
+    1. encoder输出h → 语义分解 → h_i
+    2. h_i → 局部信号增强 → h_i_enhanced
     """
     def __init__(self, hidden_dim: int, num_semantics: int = 7, lambda2: float = 0.1):
         super().__init__()
@@ -284,76 +295,59 @@ class MultiSemanticSPR(nn.Module):
         self.num_semantics = num_semantics
         self.lambda2 = lambda2  # λ₂: 软正交权重
         
-        # 全局信号增强模块（新增）：在分解前对整体句子表示进行增强
-        self.global_signal_enhancer = SignalEnhancer(hidden_dim)
-        
         # 语义分解器
         self.decomposer = SemanticDecomposer(hidden_dim, num_semantics)
         
-        # 7个并行的局部信号增强模块：对分解后的每个子语义进行精细化增强
+        # num_semantics个并行的局部信号增强模块：对分解后的每个子语义进行精细化增强
         self.local_signal_enhancers = nn.ModuleList([
             SignalEnhancer(hidden_dim) for _ in range(num_semantics)
-        ])
-        
-        # 7个并行的投影预测模块
-        self.spr_modules = nn.ModuleList([
-            SPR_Module(hidden_dim) for _ in range(num_semantics)
         ])
     
     def forward(self, sentence_repr, compute_orth_loss=True, return_all_semantics=False):
         """
-        多语义投影预测前向传播
-        生成正样本h+和计算软正交损失
+        多语义分解增强前向传播
+        生成增强后的子语义用于残差融合
         
-        双层增强流程：
-        1. 全局信号增强：h -> h_enhanced（增强整体句子表示）
-        2. 语义分解：h_enhanced -> h_i（分解为多个子语义）
-        3. 局部信号增强：h_i -> h_i_enhanced（对每个子语义进行精细化增强）
-        4. 投影预测：h_i_enhanced -> h_i+（生成正样本）
+        简化设计流程：
+        1. 语义分解：h -> h_i（分解为多个子语义）
+        2. 局部信号增强：h_i -> h_i_enhanced（对每个子语义进行精细化增强）
         
         Args:
             sentence_repr: (batch_size, hidden_dim) 锚点样本h
             compute_orth_loss: 是否计算软正交损失，默认True（训练时），False（评估时）
-            return_all_semantics: 是否返回所有子语义h_i和h_i+，默认False
+            return_all_semantics: 是否返回所有子语义h_i和h_i_enhanced，默认False
         Returns:
-            h_plus: (batch_size, hidden_dim) 融合后的正样本表示（归一化）
             orth_loss: 软正交损失
             如果return_all_semantics=True，还返回：
             h_i_list: list of (batch_size, hidden_dim) 所有子语义h_i（分解后的原始表示）
-            h_i_plus_list: list of (batch_size, hidden_dim) 所有子语义h_i+
+            h_i_enhanced_list: list of (batch_size, hidden_dim) 所有增强后的子语义h_i_enhanced
         """
-        # 步骤1：全局信号增强 - 在分解前对整体句子表示进行增强
-        h_enhanced = self.global_signal_enhancer(sentence_repr)
-        
-        # 步骤2：语义分解 - 将增强后的句子表示分解为多个语义表示，获取软正交损失
-        semantic_reprs, orth_loss = self.decomposer(h_enhanced, compute_orth_loss=compute_orth_loss)
+        # 步骤1：语义分解 - 将句子表示分解为多个语义表示，获取软正交损失
+        semantic_reprs, orth_loss = self.decomposer(sentence_repr, compute_orth_loss=compute_orth_loss)
         # semantic_reprs: (batch_size, num_semantics, hidden_dim)
         
-        # 存储所有子语义h_i和h_i+
+        # 存储所有子语义h_i和h_i_enhanced
         h_i_list = []
-        h_i_plus_list = []
+        h_i_enhanced_list = []
         
-        # 步骤3和4：对每个子语义进行局部增强和投影预测处理
+        # 步骤2：对每个子语义进行局部信号增强
         for i in range(self.num_semantics):
             # 提取第i个子语义 h_i: (batch_size, hidden_dim)
             h_i = semantic_reprs[:, i]
             
-            # 步骤3：局部信号增强 - 对每个子语义进行精细化增强
+            # 局部信号增强 - 对每个子语义进行精细化增强
             h_i_enhanced = self.local_signal_enhancers[i](h_i)
             
-            # 步骤4：投影预测 - 生成正样本h_i+
-            h_i_plus = self.spr_modules[i](h_i_enhanced)
-            
             # 不提前归一化，保持原始信号，只在计算相似度时归一化
-            # 存储原始表示
+            # 存储原始表示和增强后的表示
             h_i_list.append(h_i)
-            h_i_plus_list.append(h_i_plus)
+            h_i_enhanced_list.append(h_i_enhanced)
         
         if return_all_semantics:
-            # 返回所有子语义信息（用于子语义InfoNCE损失计算）
-            return h_i_list, h_i_plus_list, orth_loss
+            # 返回所有子语义信息（用于残差融合）
+            return h_i_list, h_i_enhanced_list, orth_loss
         else:
-            # 为了兼容性，返回None（融合将在AttentionFusion中完成）
+            # 为了兼容性，返回None（融合将在ResidualFusion中完成）
             return None, orth_loss
 
 
@@ -366,17 +360,18 @@ def prism_decomp_init(cls, config, temperature=0.05, lambda2=0.1, num_semantics=
         lambda2: 软正交损失权重（默认0.1）
         num_semantics: 语义维度数量（默认7，从配置文件读取）
     """
-    # 初始化多语义SPR模块，用于生成正样本h+
+    # 初始化多语义分解增强模块，用于生成增强后的子语义
     cls.multisemantic_spr = MultiSemanticSPR(
         config.hidden_size, 
         num_semantics=num_semantics,
         lambda2=lambda2  # λ₂: 软正交权重
     )
     
-    # 初始化拼接投影融合器，用于融合子语义表示
-    cls.attention_fusion = ConcatProjectionFusion(
+    # 初始化残差融合器，用于将增强后的子语义与原始h进行残差连接
+    cls.residual_fusion = ResidualFusion(
         hidden_dim=config.hidden_size,
-        num_semantics=num_semantics
+        num_semantics=num_semantics,
+        fusion_weight=0.5  # 融合权重，可学习
     )
     
     # 初始化相似度计算模块（用于InfoNCE损失）
@@ -479,21 +474,22 @@ def prism_decomp_forward(cls,
     # num_sent 现在为 1（单视图）
     anchor_h = sentence_repr[:, 0]  # (batch_size, hidden_dim)
     
-    # 通过多语义SPR获取所有子语义h_i和h_i+（不提前归一化）
-    # h_i_list: list of (batch_size, hidden_dim) 所有子语义h_i
-    # h_i_plus_list: list of (batch_size, hidden_dim) 所有子语义h_i+
-    h_i_list, h_i_plus_list, orth_loss = cls.multisemantic_spr(
+    # 通过多语义分解增强获取所有子语义h_i和h_i_enhanced（不提前归一化）
+    # h_i_list: list of (batch_size, hidden_dim) 所有子语义h_i（分解后的原始表示）
+    # h_i_enhanced_list: list of (batch_size, hidden_dim) 所有增强后的子语义h_i_enhanced
+    h_i_list, h_i_enhanced_list, orth_loss = cls.multisemantic_spr(
         anchor_h, 
         compute_orth_loss=True, 
         return_all_semantics=True
     )
     
-    # 使用注意力融合器融合所有子语义h_i+，得到综合语义表示h+
-    h_plus = cls.attention_fusion(anchor_h, h_i_plus_list)  # (batch_size, hidden_dim)
+    # 使用残差融合器融合所有增强后的子语义h_i_enhanced与原始h，得到综合语义表示h+
+    # 通过残差连接放大子语义信号，同时保留原始h的信息
+    h_plus = cls.residual_fusion(anchor_h, h_i_enhanced_list)  # (batch_size, hidden_dim)
     
     # ========== 计算综合语义InfoNCE损失 ==========
     # - 锚点：h[batch_idx]
-    # - 正样本：h+[batch_idx]（注意力融合后的结果）
+    # - 正样本：h+[batch_idx]（残差融合后的结果）
     # - 负样本：批次内其他句子的h[j] (j != batch_idx)
     
     loss_fct = nn.CrossEntropyLoss()
@@ -606,18 +602,19 @@ def sentemb_forward(
     else:
         sentence_repr = outputs.last_hidden_state[:, 0, :]  # (batch_size, hidden_dim)
     
-    # 多语义SPR处理（仅前向传播，不计算损失）
+    # 多语义分解增强处理（仅前向传播，不计算损失）
     with torch.no_grad():
         # 不提前归一化，保持原始信号
-        # 获取所有子语义h_i和h_i+
-        h_i_list, h_i_plus_list, _ = cls.multisemantic_spr(
+        # 获取所有子语义h_i和h_i_enhanced
+        h_i_list, h_i_enhanced_list, _ = cls.multisemantic_spr(
             sentence_repr,
             compute_orth_loss=False,
             return_all_semantics=True
         )
         
-        # 使用注意力融合器融合所有子语义h_i+，得到综合语义表示h+
-        pooler_output = cls.attention_fusion(sentence_repr, h_i_plus_list)
+        # 使用残差融合器融合所有增强后的子语义h_i_enhanced与原始h，得到综合语义表示h+
+        # 通过残差连接放大子语义信号，同时保留原始h的信息
+        pooler_output = cls.residual_fusion(sentence_repr, h_i_enhanced_list)
         
         # 归一化最终输出用于评估（余弦相似度需要归一化）
         pooler_output = F.normalize(pooler_output, p=2, dim=-1)
