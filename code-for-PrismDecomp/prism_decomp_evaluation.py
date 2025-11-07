@@ -8,6 +8,7 @@ import transformers
 from datasets import load_dataset
 from dataclasses import dataclass, field
 from typing import Optional, Union, List, Dict
+from prettytable import PrettyTable
 
 from transformers import (
     set_seed,
@@ -19,13 +20,21 @@ from transformers import (
     MODEL_FOR_MASKED_LM_MAPPING,
 )
 
-from prism_decomp_trainer import PrismDecompTrainer
 from prism_decomp_model import BertForPrismDecomp
 from transformers.trainer_utils import is_main_process
 from transformers.tokenization_utils_base import PaddingStrategy, PreTrainedTokenizerBase
 from transformers.utils import cached_property, is_torch_tpu_available
 
 from lmf_log_util import getMyLogger
+
+# Set path to SentEval
+PATH_TO_SENTEVAL = '../SentEval'
+PATH_TO_DATA = '../SentEval/data'
+
+# Import SentEval
+sys.path.insert(0, PATH_TO_SENTEVAL)
+import senteval
+import numpy as np
 
 # 跨平台设备配置
 from platform_utils import (
@@ -112,6 +121,16 @@ class ModelArguments:
             "help": "Whether semantic weights are learnable parameters"
         }
     )
+    
+    # Template arguments (for compatibility with training configs)
+    mask_embedding_sentence: bool = field(
+        default=False,
+        metadata={"help": "Whether to use template with [MASK] token (not used in evaluation)"}
+    )
+    mask_embedding_sentence_template: str = field(
+        default="The sentence of \"[X]\" means [MASK].",
+        metadata={"help": "Template for sentence representation (not used in evaluation)"}
+    )
 
 @dataclass
 class DataTrainingArguments:
@@ -143,6 +162,10 @@ class DataTrainingArguments:
         default=None, 
         metadata={"help": "The training data file (.txt or .csv)."}
     )
+    validation_file: Optional[str] = field(
+        default=None,
+        metadata={"help": "The validation data file (.txt or .csv)."}
+    )
     max_seq_length: Optional[int] = field(
         default=32,
         metadata={
@@ -162,11 +185,8 @@ class DataTrainingArguments:
         metadata={"help": "Ratio of tokens to mask for MLM (only effective if --do_mlm)"}
     )
     def __post_init__(self):
-        if self.dataset_name is None and self.train_file is None and self.validation_file is None:
-            raise ValueError("Need either a dataset name or a training/validation file.")
-        if self.train_file is not None:
-            extension = self.train_file.split(".")[-1]
-            assert extension in ["csv", "json", "txt"], "`train_file` should be a csv, a json or a txt file."
+        # For evaluation, we don't need data files, so skip validation
+        pass
 
 
 @dataclass
@@ -178,6 +198,22 @@ class OurTrainingArguments(TrainingArguments):
     eval_transfer: bool = field(
         default=False,
         metadata={"help": "Evaluate transfer task dev sets (in validation)."}
+    )
+    
+    # Task set selection for SentEval
+    task_set: str = field(
+        default='sts',
+        metadata={
+            "help": "What set of tasks to evaluate on. Choices: sts, transfer, full, na"
+        }
+    )
+    
+    # Evaluation mode
+    mode: str = field(
+        default='test',
+        metadata={
+            "help": "What evaluation mode to use. Choices: dev (fast mode, dev results), test (full mode, test results), fasttest (fast mode, test results)"
+        }
     )
 
     # reset follow flag type Optional[bool] -> bool
@@ -255,19 +291,27 @@ class OurTrainingArguments(TrainingArguments):
 
 from parse_args_util import load_configs
 
+def print_table(task_names, scores):
+    """打印结果表格"""
+    tb = PrettyTable()
+    tb.field_names = task_names
+    tb.add_row(scores)
+    print(tb)
+
 def main():
     # See all possible arguments in src/transformers/training_args.py
     # or by passing the --help flag to this script.
     # We now keep distinct sets of args, for a cleaner separation of concerns.
     
-    # 获取平台特定的配置文件
-    config_file = get_platform_config_file()
-    print(f"使用配置文件: {config_file}")
-    
     parser = HfArgumentParser((ModelArguments, DataTrainingArguments, OurTrainingArguments))
 
-    config_custom_file = sys.argv[1] if len(sys.argv) > 1 else ''
-    args_list = load_configs(default_file=config_file, custom_file=config_custom_file)
+    # 评估脚本直接使用传入的配置文件，不使用训练配置文件作为默认配置
+    config_custom_file = sys.argv[1] if len(sys.argv) > 1 else 'configs/evaluation_default.yaml'
+    if not os.path.exists(config_custom_file):
+        raise ValueError(f"评估配置文件不存在: {config_custom_file}")
+    
+    print(f"使用配置文件: {config_custom_file}")
+    args_list = load_configs(default_file='', custom_file=config_custom_file)
     
     # 根据平台自动设置设备相关参数
     platform_type = detect_platform()
@@ -327,7 +371,14 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(model_args.model_name_or_path, **tokenizer_kwargs)
 
     if model_args.model_name_or_path:
-        if 'bert' in model_args.model_name_or_path:
+        # Check if it's a BERT model by checking the config or model path
+        is_bert_model = (
+            'bert' in model_args.model_name_or_path.lower() or
+            (hasattr(config, 'architectures') and config.architectures and 
+             'Bert' in str(config.architectures))
+        )
+        
+        if is_bert_model:
             model = BertForPrismDecomp.from_pretrained(
                 model_args.model_name_or_path,
                 from_tf=".ckpt" in model_args.model_name_or_path,
@@ -346,33 +397,245 @@ def main():
 
     # Setup model for PrismDecomp
     model.pad_token_id = tokenizer.pad_token_id
+    
+    # Set model_args for sentemb_forward
+    model.model_args = model_args
 
-    trainer = PrismDecompTrainer(
-        model=model,
-        args=training_args,
-        tokenizer=tokenizer,
-    )
+    # Determine device
+    if torch.backends.mps.is_available() and not training_args.no_cuda:
+        device = torch.device("mps")
+    elif torch.cuda.is_available() and not training_args.no_cuda:
+        device = torch.device("cuda:0")
+    else:
+        device = torch.device("cpu")
+    
+    model = model.to(device)
+    model.eval()
 
-    trainer.model_args = model_args
-
-    # Evaluation
+    # Evaluation using SentEval
     if training_args.do_eval:
-        logger.info("***** Running PrismDecomp Evaluation *****")
+        logger.info("***** Running PrismDecomp Evaluation with SentEval *****")
         
-        # Evaluate on STS tasks
-        eval_results = trainer.evaluate(eval_senteval_transfer=True)
+        # SentEval prepare and batcher
+        def prepare(params, samples):
+            return
+
+        def batcher(params, batch):
+            """
+            SentEval batcher函数
+            batch: 单个任务的一批句子，每个句子是token列表
+            """
+            # Handle rare token encoding issues in the dataset
+            if len(batch) >= 1 and len(batch[0]) >= 1 and isinstance(batch[0][0], bytes):
+                batch = [[word.decode('utf-8') for word in s] for s in batch]
+
+            sentences = [' '.join(s) for s in batch]
+            
+            # 使用模板编码（如果启用）
+            if model_args.mask_embedding_sentence and model_args.mask_embedding_sentence_template is not None:
+                template = model_args.mask_embedding_sentence_template
+                template = template.replace('[X]', '*sent_0*').replace('*mask*', tokenizer.mask_token)\
+                                   .replace('_', ' ').replace('*sep+*', '').replace('*cls*', '')
+
+                for i, s in enumerate(sentences):
+                    if len(s) > 0 and s[-1] not in '.?"\'': 
+                        s += '.'
+                    sentences[i] = template.replace('*sent_0*', s).strip()
+            
+            # 批量编码
+            batch_input = tokenizer.batch_encode_plus(
+                sentences,
+                return_tensors='pt',
+                padding=True,
+            )
+            
+            for k in batch_input:
+                batch_input[k] = batch_input[k].to(device) if batch_input[k] is not None else None
+
+            # Get sentence embeddings using sentemb_forward
+            with torch.no_grad():
+                outputs = model(
+                    input_ids=batch_input['input_ids'],
+                    attention_mask=batch_input['attention_mask'],
+                    token_type_ids=batch_input.get('token_type_ids', None),
+                    sent_emb=True,
+                    return_dict=True,
+                )
+                pooler_output = outputs.pooler_output
+
+            return pooler_output.cpu()
+
+        # Set params for SentEval based on mode
+        if training_args.mode == 'dev' or training_args.mode == 'fasttest':
+            # Fast mode
+            params = {'task_path': PATH_TO_DATA, 'usepytorch': True, 'kfold': 5}
+            params['classifier'] = {'nhid': 0, 'optim': 'rmsprop', 'batch_size': 128, 'tenacity': 3, 'epoch_size': 2}
+        elif training_args.mode == 'test':
+            # Full mode
+            params = {'task_path': PATH_TO_DATA, 'usepytorch': True, 'kfold': 10}
+            params['classifier'] = {'nhid': 0, 'optim': 'adam', 'batch_size': 64, 'tenacity': 5, 'epoch_size': 4}
+        else:
+            raise ValueError(f"Unknown mode: {training_args.mode}. Choose from: dev, test, fasttest")
+
+        se = senteval.engine.SE(params, batcher, prepare)
+        
+        # Set tasks based on task_set
+        if training_args.task_set == 'sts':
+            tasks = ['STS12', 'STS13', 'STS14', 'STS15', 'STS16', 'STSBenchmark', 'SICKRelatedness']
+        elif training_args.task_set == 'transfer':
+            tasks = ['MR', 'CR', 'MPQA', 'SUBJ', 'SST2', 'TREC', 'MRPC']
+        elif training_args.task_set == 'full':
+            tasks = ['STS12', 'STS13', 'STS14', 'STS15', 'STS16', 'STSBenchmark', 'SICKRelatedness']
+            tasks += ['MR', 'CR', 'MPQA', 'SUBJ', 'SST2', 'TREC', 'MRPC']
+        else:  # 'na' or default
+            # Keep backward compatibility with eval_transfer
+            tasks = ['STSBenchmark', 'SICKRelatedness']
+            if training_args.eval_transfer:
+                tasks += ['MR', 'CR', 'SUBJ', 'MPQA', 'SST2', 'TREC', 'MRPC']
+
+        # Run evaluation
+        results = se.eval(tasks)
+        
+        # Determine result key based on mode
+        if training_args.mode == 'dev':
+            result_key = 'dev'
+            spearman_key = 'spearman'
+        elif training_args.mode == 'fasttest' or training_args.mode == 'test':
+            result_key = 'test'
+            spearman_key = 'spearman'
+        else:
+            result_key = 'test'
+            spearman_key = 'spearman'
+        
+        # Print results based on task_set
+        if training_args.task_set == 'sts' or training_args.task_set == 'full':
+            print(f"------ {training_args.mode.capitalize()} Results (STS Tasks) ------")
+            scores = []
+            task_names = []
+            
+            # For dev mode, only evaluate STSBenchmark and SICKRelatedness (STS12-16 don't have dev data)
+            if result_key == 'dev':
+                sts_tasks = ['STSBenchmark', 'SICKRelatedness']
+            else:
+                sts_tasks = ['STS12', 'STS13', 'STS14', 'STS15', 'STS16', 'STSBenchmark', 'SICKRelatedness']
+            
+            for task in sts_tasks:
+                task_names.append(task)
+                if task in results:
+                    if task in ['STS12', 'STS13', 'STS14', 'STS15', 'STS16']:
+                        # STS12-16 only have test data, use 'all' key
+                        scores.append("%.2f" % (results[task]['all']['spearman']['all'] * 100))
+                    else:
+                        # STSBenchmark and SICKRelatedness
+                        if result_key == 'dev':
+                            scores.append("%.2f" % (results[task]['dev']['spearman'][0] * 100))
+                        else:
+                            scores.append("%.2f" % (results[task]['test']['spearman'].correlation * 100))
+                else:
+                    scores.append("0.00")
+            
+            task_names.append("Avg.")
+            scores.append("%.2f" % (sum([float(score) for score in scores]) / len(scores)))
+            print_table(task_names, scores)
+        
+        # Print transfer task results if evaluated
+        if training_args.task_set == 'transfer' or training_args.task_set == 'full':
+            print(f"------ {training_args.mode.capitalize()} Results (Transfer Tasks) ------")
+            scores = []
+            task_names = []
+            for task in ['MR', 'CR', 'SUBJ', 'MPQA', 'SST2', 'TREC', 'MRPC']:
+                task_names.append(task)
+                if task in results:
+                    if result_key == 'dev':
+                        scores.append("%.2f" % (results[task]['devacc']))
+                    else:
+                        scores.append("%.2f" % (results[task]['acc']))
+                else:
+                    scores.append("0.00")
+            
+            task_names.append("Avg.")
+            scores.append("%.2f" % (sum([float(score) for score in scores]) / len(scores)))
+            print_table(task_names, scores)
+        
+        # Also print if eval_transfer is True (backward compatibility)
+        if training_args.eval_transfer and training_args.task_set not in ['transfer', 'full']:
+            print(f"------ {training_args.mode.capitalize()} Results (Transfer Tasks) ------")
+            scores = []
+            task_names = []
+            for task in ['MR', 'CR', 'SUBJ', 'MPQA', 'SST2', 'TREC', 'MRPC']:
+                task_names.append(task)
+                if task in results:
+                    if result_key == 'dev':
+                        scores.append("%.2f" % (results[task]['devacc']))
+                    else:
+                        scores.append("%.2f" % (results[task]['acc']))
+                else:
+                    scores.append("0.00")
+            
+            task_names.append("Avg.")
+            scores.append("%.2f" % (sum([float(score) for score in scores]) / len(scores)))
+            print_table(task_names, scores)
         
         # Log results
         logger.info("***** PrismDecomp Evaluation Results *****")
+        eval_results = {}
+        
+        # Add STS results if task_set includes STS
+        if training_args.task_set in ['sts', 'full']:
+            # Extract STSBenchmark and SICKRelatedness results
+            stsb_spearman = None
+            sickr_spearman = None
+            if 'STSBenchmark' in results:
+                if result_key == 'dev':
+                    stsb_spearman = results['STSBenchmark']['dev']['spearman'][0]
+                else:
+                    stsb_spearman = results['STSBenchmark']['test']['spearman'].correlation
+            if 'SICKRelatedness' in results:
+                if result_key == 'dev':
+                    sickr_spearman = results['SICKRelatedness']['dev']['spearman'][0]
+                else:
+                    sickr_spearman = results['SICKRelatedness']['test']['spearman'].correlation
+            
+            # Add main STS task results
+            if stsb_spearman is not None:
+                eval_results["eval_stsb_spearman"] = stsb_spearman
+            if sickr_spearman is not None:
+                eval_results["eval_sickr_spearman"] = sickr_spearman
+            if stsb_spearman is not None and sickr_spearman is not None:
+                eval_results["eval_avg_sts"] = (stsb_spearman + sickr_spearman) / 2
+            
+            # Add all STS task results (STS12-16)
+            # Note: STS12-16 only have test data, always use 'all' key
+            for task in ['STS12', 'STS13', 'STS14', 'STS15', 'STS16']:
+                if task in results:
+                    eval_results[f'eval_{task.lower()}_spearman'] = results[task]['all']['spearman']['all']
+        
+        # Add transfer task results
+        if training_args.task_set in ['transfer', 'full'] or training_args.eval_transfer:
+            avg_transfer = 0
+            transfer_count = 0
+            for task in ['MR', 'CR', 'SUBJ', 'MPQA', 'SST2', 'TREC', 'MRPC']:
+                if task in results:
+                    if result_key == 'dev':
+                        acc = results[task]['devacc']
+                    else:
+                        acc = results[task]['acc']
+                    avg_transfer += acc
+                    transfer_count += 1
+                    eval_results[f'eval_{task.lower()}'] = acc
+            if transfer_count > 0:
+                avg_transfer /= transfer_count
+                eval_results['eval_avg_transfer'] = avg_transfer
+        
         for key, value in sorted(eval_results.items()):
             logger.info(f"  {key} = {value}")
         
         # Save results
         output_eval_file = os.path.join(training_args.output_dir, "eval_results.txt")
-        if trainer.is_world_process_zero():
-            with open(output_eval_file, "w") as writer:
-                for key, value in sorted(eval_results.items()):
-                    writer.write(f"{key} = {value}\n")
+        os.makedirs(training_args.output_dir, exist_ok=True)
+        with open(output_eval_file, "w") as writer:
+            for key, value in sorted(eval_results.items()):
+                writer.write(f"{key} = {value}\n")
 
 
 if __name__ == "__main__":

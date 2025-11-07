@@ -3,7 +3,7 @@ output_dir: "../result/PrismDecomp-BERT-eval"
 do_eval: true
 do_train: false
 fp16: false
-use_mps_device: false
+use_mps_device: true
 seed: 0
 
 # Evaluation settings
@@ -14,3 +14,4 @@ mode: test
 num_semantics: 7
 orthogonal_constraint: true
 semantic_weights_learnable: true
+
