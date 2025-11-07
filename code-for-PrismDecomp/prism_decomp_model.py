@@ -452,10 +452,11 @@ def prism_decomp_forward(cls,
         sentence_repr_list = []
         
         for i in range(batch_size_flat):
-            mask_positions = (input_ids[i] == mask_token_id).nonzero(as_tuple=True)[0]
-            if len(mask_positions) > 0:
-                # 使用第一个[MASK]的位置
-                mask_pos = mask_positions[0].item()
+            # 使用argmax找到第一个mask token位置，兼容MPS后端
+            mask_mask = (input_ids[i] == mask_token_id)
+            if mask_mask.any():
+                # 使用argmax找到第一个True的位置（即第一个[MASK]的位置）
+                mask_pos = mask_mask.long().argmax().item()
                 sentence_repr_list.append(outputs.last_hidden_state[i, mask_pos, :])
             else:
                 # 如果没有[MASK]，回退到[CLS]
@@ -593,9 +594,12 @@ def sentemb_forward(
         # input_ids.size(0) = batch_size (批次中的句子数)
         sentence_repr_list = []
         for i in range(input_ids.size(0)):
-            mask_pos_i = (input_ids[i] == mask_token_id).nonzero(as_tuple=True)[0]
-            if len(mask_pos_i) > 0:
-                sentence_repr_list.append(outputs.last_hidden_state[i, mask_pos_i[0].item(), :])
+            # 使用argmax找到第一个mask token位置，兼容MPS后端
+            mask_mask = (input_ids[i] == mask_token_id)
+            if mask_mask.any():
+                # 使用argmax找到第一个True的位置（即第一个[MASK]的位置）
+                mask_pos = mask_mask.long().argmax().item()
+                sentence_repr_list.append(outputs.last_hidden_state[i, mask_pos, :])
             else:
                 sentence_repr_list.append(outputs.last_hidden_state[i, 0, :])
         sentence_repr = torch.stack(sentence_repr_list, dim=0)  # (batch_size, hidden_dim)

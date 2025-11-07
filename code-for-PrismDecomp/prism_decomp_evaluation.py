@@ -316,10 +316,9 @@ def main():
     # 根据平台自动设置设备相关参数
     platform_type = detect_platform()
     if platform_type == "mac_m4":
-        # Mac M4: 使用MPS，禁用CUDA
-        args_list.extend([
-            "--no_cuda", "true"
-        ])
+        # Mac M4: 使用MPS，不设置no_cuda（让MPS可用）
+        # 注意：no_cuda只影响CUDA，不影响MPS，所以不设置它
+        pass
     elif platform_type == "linux_cuda":
         # Linux CUDA: 使用CUDA，禁用MPS
         args_list.extend([
@@ -402,12 +401,17 @@ def main():
     model.model_args = model_args
 
     # Determine device
-    if torch.backends.mps.is_available() and not training_args.no_cuda:
+    # 优先使用MPS（Mac M4），然后CUDA，最后CPU
+    # 注意：no_cuda只影响CUDA，不影响MPS
+    if torch.backends.mps.is_available():
         device = torch.device("mps")
+        logger.info(f"使用MPS设备: {device}")
     elif torch.cuda.is_available() and not training_args.no_cuda:
         device = torch.device("cuda:0")
+        logger.info(f"使用CUDA设备: {device}")
     else:
         device = torch.device("cpu")
+        logger.info(f"使用CPU设备: {device}")
     
     model = model.to(device)
     model.eval()
@@ -424,41 +428,57 @@ def main():
             """
             SentEval batcher函数
             batch: 单个任务的一批句子，每个句子是token列表
+            对于STS任务，SentEval会分别传两批句子（batch1和batch2）
+            每批都单独处理，返回各自的编码
             """
             # Handle rare token encoding issues in the dataset
             if len(batch) >= 1 and len(batch[0]) >= 1 and isinstance(batch[0][0], bytes):
                 batch = [[word.decode('utf-8') for word in s] for s in batch]
 
+            # batch是一个句子列表，每个句子是token列表
             sentences = [' '.join(s) for s in batch]
-            
-            # 使用模板编码（如果启用）
-            if model_args.mask_embedding_sentence and model_args.mask_embedding_sentence_template is not None:
-                template = model_args.mask_embedding_sentence_template
-                template = template.replace('[X]', '*sent_0*').replace('*mask*', tokenizer.mask_token)\
-                                   .replace('_', ' ').replace('*sep+*', '').replace('*cls*', '')
 
-                for i, s in enumerate(sentences):
-                    if len(s) > 0 and s[-1] not in '.?"\'': 
-                        s += '.'
-                    sentences[i] = template.replace('*sent_0*', s).strip()
-            
-            # 批量编码
-            batch_input = tokenizer.batch_encode_plus(
-                sentences,
-                return_tensors='pt',
-                padding=True,
-            )
-            
-            for k in batch_input:
-                batch_input[k] = batch_input[k].to(device) if batch_input[k] is not None else None
+            # 使用模板编码每个句子（与训练时保持一致）
+            if model_args and hasattr(model_args, 'mask_embedding_sentence') and model_args.mask_embedding_sentence:
+                # 应用模板：构造完整模板字符串（优化：利用tokenizer批量处理）
+                template = model_args.mask_embedding_sentence_template
+                parts = template.split('[X]')
+                prefix = parts[0]  # "The sentence of \""
+                suffix = parts[1] if len(parts) > 1 else " means [MASK]."
+                
+                # 为每个句子构造完整的模板字符串
+                templated_sentences = []
+                for sent in sentences:
+                    # 构造完整模板字符串："The sentence of "原句子" means [MASK]."
+                    full_text = prefix + sent + suffix
+                    templated_sentences.append(full_text)
+                
+                # 批量编码（利用tokenizer的内置优化）
+                batch_input = tokenizer.batch_encode_plus(
+                    templated_sentences,
+                    return_tensors='pt',
+                    padding=True,
+                )
+                for k in batch_input:
+                    batch_input[k] = batch_input[k].to(device) if batch_input[k] is not None else None
+            else:
+                # 不使用模板，直接编码
+                batch_input = tokenizer.batch_encode_plus(
+                    sentences,
+                    return_tensors='pt',
+                    padding=True,
+                )
+                for k in batch_input:
+                    batch_input[k] = batch_input[k].to(device) if batch_input[k] is not None else None
 
             # Get sentence embeddings using sentemb_forward
+            # sentemb_forward会提取mask位置，进行分解融合等流程
             with torch.no_grad():
                 outputs = model(
                     input_ids=batch_input['input_ids'],
                     attention_mask=batch_input['attention_mask'],
                     token_type_ids=batch_input.get('token_type_ids', None),
-                    sent_emb=True,
+                    sent_emb=True,  # 使用sentemb_forward进行mask提取、分解融合
                     return_dict=True,
                 )
                 pooler_output = outputs.pooler_output

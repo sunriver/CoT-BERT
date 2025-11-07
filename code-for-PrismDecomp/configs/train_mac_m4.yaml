@@ -10,6 +10,12 @@ evaluation_strategy: steps
 metric_for_best_model: stsb_spearman
 load_best_model_at_end: true
 eval_steps: 2 # 每eval_steps个更新梯度进行一次评估，即gradient_accumulation_steps
+
+# 补充保存策略配置
+save_strategy: steps       # 与评估策略保持一致（按步数保存）
+save_steps: 2             # 每 30 步保存一次（与 eval_steps 相同，确保每次评估后都保存）
+save_total_limit: 1        # 只保留最新的1个模型（即当前最佳模型）
+
 #save_steps: 125
 overwrite_output_dir: true
 do_train: true
