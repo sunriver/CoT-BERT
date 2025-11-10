@@ -16,5 +16,5 @@ temperature: 0.05
 # Template arguments (与训练时保持一致)
 mask_embedding_sentence: true
 stage1_template: "The sentence of \"[X]\" means [MASK]."
-stage2_template: "so [it] can be summarized as [MASK]."
+stage2_template: "so [IT_SPECIAL_TOKEN] can be summarized as [MASK]."
 

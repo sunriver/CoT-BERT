@@ -82,7 +82,7 @@ class TwoStageCoTTrainer(Trainer):
             tokenizer = self.tokenizer
         
         stage1_template = getattr(self.model_args, 'stage1_template', "The sentence of \"[X]\" means [MASK].")
-        stage2_template = getattr(self.model_args, 'stage2_template', "so [it] can be summarized as [MASK].")
+        stage2_template = getattr(self.model_args, 'stage2_template', "so [IT_SPECIAL_TOKEN] can be summarized as [MASK].")
         
         # 调用模型前向传播
         outputs = model(
@@ -158,7 +158,7 @@ class TwoStageCoTTrainer(Trainer):
                     batch_input[k] = batch_input[k].to(self.args.device)
 
             # 获取第二阶段模版
-            stage2_template = getattr(self.model_args, 'stage2_template', "so [it] can be summarized as [MASK].")
+            stage2_template = getattr(self.model_args, 'stage2_template', "so [IT_SPECIAL_TOKEN] can be summarized as [MASK].")
             
             with torch.no_grad():
                 outputs = self.model(

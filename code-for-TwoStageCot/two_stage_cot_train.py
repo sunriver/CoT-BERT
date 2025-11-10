@@ -111,7 +111,7 @@ class ModelArguments:
         metadata={"help": "Stage 1 template for sentence representation"}
     )
     stage2_template: str = field(
-        default="so [it] can be summarized as [MASK].",
+        default="so [IT_SPECIAL_TOKEN] can be summarized as [MASK].",
         metadata={"help": "Stage 2 template for sentence representation"}
     )
 
@@ -446,7 +446,12 @@ def main():
     else:
         raise NotImplementedError
     
-    model.resize_token_embeddings(len(tokenizer))
+    # 添加 [IT_SPECIAL_TOKEN] 特殊 token
+    if '[IT_SPECIAL_TOKEN]' not in tokenizer.get_vocab():
+        tokenizer.add_special_tokens({'additional_special_tokens': ['[IT_SPECIAL_TOKEN]']})
+        model.resize_token_embeddings(len(tokenizer))
+    else:
+        model.resize_token_embeddings(len(tokenizer))
 
     # Prepare features
     column_names = datasets["train"].column_names

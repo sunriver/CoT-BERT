@@ -5,9 +5,9 @@
 本项目实现了基于BERT的两阶段思维链分解方法，将原始长模版分解为两个短模版，通过embedding替换机制实现两阶段表示学习。**核心创新**：原始模版 "The sentence of [X] means [mask], so it can be summarized as [mask]." 太长，引入的噪声较大。因此，我们设计了**两阶段思维链分解机制**：
 
 1. **第一阶段**：使用模版1 "The sentence of [X] means [mask]." 获得第一阶段句子表示 h
-2. **第二阶段**：使用模版2 "so [it] can be summarized as [mask]."
+2. **第二阶段**：使用模版2 "so [IT_SPECIAL_TOKEN] can be summarized as [mask]."
    - 获取模版 embedding 矩阵
-   - 将 [it] 位置的 token embedding 替换为第一阶段得到的 h
+   - 将 [IT_SPECIAL_TOKEN] 位置的 token embedding 替换为第一阶段得到的 h
    - 将新的 embedding 矩阵输入到 BERT，得到第二阶段的 mask 表示 h+
 
 训练阶段使用 InfoNCE 损失，正样本对为 (h, h+)，负样本对为 h+ 和批次中其他句子的 h+。
@@ -18,9 +18,9 @@
 - **问题**：原始长模版 "The sentence of [X] means [mask], so it can be summarized as [mask]." 太长，引入的噪声较大
 - **解决方案**：将思维链分拆成两步
   - **第一步**：使用模版1 "The sentence of [X] means [mask]." 获得第一阶段句子表示 h
-  - **第二步**：使用模版2 "so [it] can be summarized as [mask]."
+  - **第二步**：使用模版2 "so [IT_SPECIAL_TOKEN] can be summarized as [mask]."
     - 获取模版 embedding 矩阵
-    - 将 [it] 位置的 token embedding 替换为 h
+    - 将 [IT_SPECIAL_TOKEN] 位置的 token embedding 替换为 h
     - 输入到 BERT 得到 h+
 - **优势**：
   - 降低模版长度，减少噪声
@@ -28,11 +28,11 @@
   - 保持思维链的连贯性
 
 ### 2. Embedding 替换机制 ⭐⭐⭐⭐⭐
-- **核心机制**：将第一阶段得到的句子表示 h 替换到第二阶段模版中 [it] 位置的 token embedding
+- **核心机制**：将第一阶段得到的句子表示 h 替换到第二阶段模版中 [IT_SPECIAL_TOKEN] 位置的 token embedding
 - **实现方式**：
   1. 获取第二阶段模版的 embedding 矩阵
-  2. 定位 [it] token 在模版中的位置
-  3. 将 [it] 位置的 embedding 替换为 h
+  2. 定位 [IT_SPECIAL_TOKEN] token 在模版中的位置
+  3. 将 [IT_SPECIAL_TOKEN] 位置的 embedding 替换为 h
   4. 使用替换后的 embedding 矩阵输入到 BERT
 - **优势**：
   - 实现两阶段信息的传递
@@ -81,22 +81,22 @@ TwoStageCoT-BERT/
 - **表示提取**：从 [MASK] 位置的 BERT 隐藏状态提取句子语义表示 h
 
 #### 第二阶段模版
-- **模版格式**：`"so [it] can be summarized as [MASK]."`
+- **模版格式**：`"so [IT_SPECIAL_TOKEN] can be summarized as [MASK]."`
 - **作用**：获得第二阶段句子表示 h+
 - **处理流程**：
   1. 获取模版 embedding 矩阵
-  2. 定位 [it] token 位置
-  3. 将 [it] 位置的 embedding 替换为 h
+  2. 定位 [IT_SPECIAL_TOKEN] token 位置
+  3. 将 [IT_SPECIAL_TOKEN] 位置的 embedding 替换为 h
   4. 输入到 BERT 得到 h+
 
 ### 2. Embedding 替换机制
 
 **实现步骤**：
 1. 获取第二阶段模版的 token ids（不包含特殊token）
-2. 找到 [it] token 在模版中的位置
+2. 找到 [IT_SPECIAL_TOKEN] token 在模版中的位置
 3. 构建完整的第二阶段输入（添加特殊token）
 4. 通过 embedding 层获取模版的 embedding
-5. 将 h 替换到 [it] 位置的 embedding
+5. 将 h 替换到 [IT_SPECIAL_TOKEN] 位置的 embedding
 6. 使用替换后的 embedding 输入到 BERT
 
 ### 3. InfoNCE 损失计算
@@ -155,7 +155,7 @@ python two_stage_cot_train.py configs/evaluation_default.yaml
 - `output_dir`: 输出目录
 - `temperature`: InfoNCE损失温度参数（默认0.05）
 - `stage1_template`: 第一阶段模版（默认 "The sentence of \"[X]\" means [MASK]."）
-- `stage2_template`: 第二阶段模版（默认 "so [it] can be summarized as [MASK]."）
+- `stage2_template`: 第二阶段模版（默认 "so [IT_SPECIAL_TOKEN] can be summarized as [MASK]."）
 
 ### 评估配置
 

@@ -57,9 +57,9 @@ def two_stage_cot_forward(cls,
     两阶段思维链前向传播函数
     实现两阶段模版处理：
     1. 第一阶段：使用模版1 "The sentence of [X] means [mask]." 获得 h
-    2. 第二阶段：使用模版2 "so [it] can be summarized as [mask]."
+    2. 第二阶段：使用模版2 "so [IT_SPECIAL_TOKEN] can be summarized as [mask]."
        - 获取模版 embedding 矩阵
-       - 将 [it] 位置的 token embedding 替换为 h
+       - 将 [IT_SPECIAL_TOKEN] 位置的 token embedding 替换为 h
        - 输入到 BERT 得到 h+
     """
     return_dict = return_dict if return_dict is not None else cls.config.use_return_dict
@@ -110,23 +110,18 @@ def two_stage_cot_forward(cls,
     # ========== 第二阶段：使用模版2获得 h+ ==========
     # 准备第二阶段模版
     if stage2_template is None:
-        stage2_template = "so [it] can be summarized as [MASK]."
+        stage2_template = "so [IT_SPECIAL_TOKEN] can be summarized as [MASK]."
     
     # 获取模版2的 token ids（不包含特殊token）
     stage2_template_ids = tokenizer.encode(stage2_template, add_special_tokens=False)
     
-    # 找到 [it] token 的位置（在模版中）
-    # 假设 [it] 在模版中对应 "it" 这个token
-    it_token = tokenizer.encode("it", add_special_tokens=False)
-    if len(it_token) > 0:
-        it_token_id = it_token[0]
-    else:
-        # 如果 "it" 被分词成多个token，取第一个
-        it_token_id = tokenizer.encode(" it", add_special_tokens=False)[0] if len(tokenizer.encode(" it", add_special_tokens=False)) > 0 else None
+    # 找到 [IT_SPECIAL_TOKEN] 的位置（在模版中）
+    # 使用特殊 token [IT_SPECIAL_TOKEN] 而不是普通词 "it"
+    it_token_id = tokenizer.convert_tokens_to_ids('[IT_SPECIAL_TOKEN]')
     
-    # 找到模版中 [it] 的位置
+    # 找到模版中 [IT_SPECIAL_TOKEN] 的位置
     it_pos_in_template = None
-    if it_token_id is not None:
+    if it_token_id is not None and it_token_id != tokenizer.unk_token_id:
         for idx, tid in enumerate(stage2_template_ids):
             if tid == it_token_id:
                 it_pos_in_template = idx
@@ -158,16 +153,16 @@ def two_stage_cot_forward(cls,
     # BERT 的 embeddings 是一个模块，可以直接调用
     stage2_embeddings = encoder.embeddings(stage2_input_ids)  # (batch_size, seq_len, hidden_dim)
     
-    # 找到 [it] 在完整序列中的位置（考虑 [CLS]）
+    # 找到 [IT_SPECIAL_TOKEN] 在完整序列中的位置（考虑 [CLS]）
     if it_pos_in_template is not None:
         it_pos_in_sequence = it_pos_in_template + 1  # +1 因为前面有 [CLS]
         
-        # 将 h 替换到 [it] 位置
+        # 将 h 替换到 [IT_SPECIAL_TOKEN] 位置
         # h shape: (batch_size, hidden_dim)
         # 需要扩展到 (batch_size, 1, hidden_dim) 然后替换
         h_expanded = h.unsqueeze(1)  # (batch_size, 1, hidden_dim)
         
-        # 替换 [it] 位置的 embedding
+        # 替换 [IT_SPECIAL_TOKEN] 位置的 embedding
         stage2_embeddings[:, it_pos_in_sequence, :] = h.squeeze(1) if len(h.shape) == 3 else h
     
     # 使用替换后的 embedding 输入到 BERT
@@ -297,19 +292,17 @@ def sentemb_forward(
 
     # 第二阶段：使用模版2获得 h+
     if stage2_template is None:
-        stage2_template = "so [it] can be summarized as [MASK]."
+        stage2_template = "so [IT_SPECIAL_TOKEN] can be summarized as [MASK]."
     
     stage2_template_ids = tokenizer.encode(stage2_template, add_special_tokens=False)
     
-    # 找到 [it] token 的位置
-    it_token = tokenizer.encode("it", add_special_tokens=False)
-    if len(it_token) > 0:
-        it_token_id = it_token[0]
-    else:
-        it_token_id = tokenizer.encode(" it", add_special_tokens=False)[0] if len(tokenizer.encode(" it", add_special_tokens=False)) > 0 else None
+    # 找到 [IT_SPECIAL_TOKEN] 的位置（在模版中）
+    # 使用特殊 token [IT_SPECIAL_TOKEN] 而不是普通词 "it"
+    it_token_id = tokenizer.convert_tokens_to_ids('[IT_SPECIAL_TOKEN]')
     
+    # 找到模版中 [IT_SPECIAL_TOKEN] 的位置
     it_pos_in_template = None
-    if it_token_id is not None:
+    if it_token_id is not None and it_token_id != tokenizer.unk_token_id:
         for idx, tid in enumerate(stage2_template_ids):
             if tid == it_token_id:
                 it_pos_in_template = idx
@@ -333,7 +326,7 @@ def sentemb_forward(
     stage2_input_ids = torch.tensor(stage2_input_ids, device=input_ids.device, dtype=torch.long)
     stage2_attention_mask = torch.tensor(stage2_attention_masks, device=input_ids.device, dtype=torch.long)
     
-    # 获取模版 embedding 并替换 [it] 位置
+    # 获取模版 embedding 并替换 [IT_SPECIAL_TOKEN] 位置
     stage2_embeddings = encoder.embeddings(stage2_input_ids)
     
     if it_pos_in_template is not None:
