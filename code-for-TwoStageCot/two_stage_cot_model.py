@@ -200,9 +200,10 @@ def two_stage_cot_forward(cls,
     
     loss_fct = nn.CrossEntropyLoss()
     
-    # 归一化用于计算相似度
-    h_norm = F.normalize(h, p=2, dim=-1)
-    h_plus_norm = F.normalize(h_plus, p=2, dim=-1)
+    # 归一化用于计算相似度（添加小的epsilon避免零向量导致NaN）
+    eps = 1e-8
+    h_norm = F.normalize(h, p=2, dim=-1, eps=eps)
+    h_plus_norm = F.normalize(h_plus, p=2, dim=-1, eps=eps)
     
     # 计算正样本对相似度（h[i] 与 h_plus[i]）
     pos_sim = (h_norm * h_plus_norm).sum(dim=-1, keepdim=True) / cls.temperature  # (batch_size, 1)
@@ -364,8 +365,9 @@ def sentemb_forward(
         batch_indices = torch.arange(batch_size, device=stage2_input_ids.device)
         pooler_output = stage2_outputs.last_hidden_state[batch_indices, mask_positions]  # (batch_size, hidden_dim)
         
-        # 归一化最终输出用于评估
-        pooler_output = F.normalize(pooler_output, p=2, dim=-1)
+        # 归一化最终输出用于评估（添加小的epsilon避免零向量导致NaN）
+        eps = 1e-8
+        pooler_output = F.normalize(pooler_output, p=2, dim=-1, eps=eps)
 
     if not return_dict:
         return (stage2_outputs[0], pooler_output) + stage2_outputs[2:]
