@@ -2,21 +2,21 @@ model_name_or_path: "/path/to/bert-base-uncased"
 train_file: "../data/wiki1m_for_simcse.txt"
 output_dir: "../result/TwoStageCoT-BERT"
 num_train_epochs: 1
-per_device_train_batch_size: 64
+per_device_train_batch_size: 128
 gradient_accumulation_steps: 1
 learning_rate: 1e-5
 max_seq_length: 32
 evaluation_strategy: steps
 metric_for_best_model: stsb_spearman
 load_best_model_at_end: true
-eval_steps: 50
+eval_steps: 100
 
 # 补充保存策略配置
 save_strategy: steps       # 与评估策略保持一致（按步数保存）
-save_steps: 50             # 每 125 步保存一次（与 eval_steps 相同，确保每次评估后都保存）
+save_steps: 100            # 每 125 步保存一次（与 eval_steps 相同，确保每次评估后都保存）
 save_total_limit: 1        # 只保留最新的1个模型（即当前最佳模型）
 
-logging_steps: 50
+logging_steps: 100
 
 overwrite_output_dir: true
 do_train: true

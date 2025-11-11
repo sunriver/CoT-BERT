@@ -24,7 +24,7 @@ preprocessing_num_workers: 10
 use_mps_device: false
 dataloader_drop_last: true
 seed: 0
-overwrite_cache: false
+overwrite_cache: true
 
 logging_steps: 2
 

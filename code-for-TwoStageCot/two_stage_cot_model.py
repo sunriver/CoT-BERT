@@ -148,22 +148,28 @@ def two_stage_cot_forward(cls,
     stage2_input_ids = torch.tensor(stage2_input_ids, device=input_ids.device, dtype=torch.long)
     stage2_attention_mask = torch.tensor(stage2_attention_masks, device=input_ids.device, dtype=torch.long)
     
-    # 获取模版 embedding
-    # 先通过 embedding 层获取模版的 embedding
-    # BERT 的 embeddings 是一个模块，可以直接调用
+    # 获取模版 embedding（包含 token + position + token_type）
     stage2_embeddings = encoder.embeddings(stage2_input_ids)  # (batch_size, seq_len, hidden_dim)
     
     # 找到 [IT_SPECIAL_TOKEN] 在完整序列中的位置（考虑 [CLS]）
     if it_pos_in_template is not None:
         it_pos_in_sequence = it_pos_in_template + 1  # +1 因为前面有 [CLS]
         
-        # 将 h 替换到 [IT_SPECIAL_TOKEN] 位置
-        # h shape: (batch_size, hidden_dim)
-        # 需要扩展到 (batch_size, 1, hidden_dim) 然后替换
-        h_expanded = h.unsqueeze(1)  # (batch_size, 1, hidden_dim)
+        # 只替换 token embedding 部分，保留 position 和 token type embeddings
+        # 获取该位置的 position 和 token type embeddings
+        position_ids = torch.arange(stage2_embeddings.size(1), device=stage2_embeddings.device).unsqueeze(0)  # (1, seq_len)
+        position_embeddings = encoder.embeddings.position_embeddings(position_ids)  # (1, seq_len, hidden_dim)
         
-        # 替换 [IT_SPECIAL_TOKEN] 位置的 embedding
-        stage2_embeddings[:, it_pos_in_sequence, :] = h.squeeze(1) if len(h.shape) == 3 else h
+        token_type_ids = torch.zeros(stage2_embeddings.size(1), dtype=torch.long, device=stage2_embeddings.device).unsqueeze(0)  # (1, seq_len)
+        token_type_embeddings = encoder.embeddings.token_type_embeddings(token_type_ids)  # (1, seq_len, hidden_dim)
+        
+        # 替换：h + position_embedding + token_type_embedding
+        # h 是第一阶段提取的完整 hidden state，但我们需要用第二阶段的位置和类型信息
+        stage2_embeddings[:, it_pos_in_sequence, :] = (
+            h + 
+            position_embeddings[0, it_pos_in_sequence, :] + 
+            token_type_embeddings[0, it_pos_in_sequence, :]
+        )
     
     # 使用替换后的 embedding 输入到 BERT
     stage2_outputs = encoder(
@@ -326,12 +332,27 @@ def sentemb_forward(
     stage2_input_ids = torch.tensor(stage2_input_ids, device=input_ids.device, dtype=torch.long)
     stage2_attention_mask = torch.tensor(stage2_attention_masks, device=input_ids.device, dtype=torch.long)
     
-    # 获取模版 embedding 并替换 [IT_SPECIAL_TOKEN] 位置
+    # 获取模版 embedding（包含 token + position + token_type）
     stage2_embeddings = encoder.embeddings(stage2_input_ids)
     
     if it_pos_in_template is not None:
         it_pos_in_sequence = it_pos_in_template + 1
-        stage2_embeddings[:, it_pos_in_sequence, :] = h
+        
+        # 只替换 token embedding 部分，保留 position 和 token type embeddings
+        # 获取该位置的 position 和 token type embeddings
+        position_ids = torch.arange(stage2_embeddings.size(1), device=stage2_embeddings.device).unsqueeze(0)  # (1, seq_len)
+        position_embeddings = encoder.embeddings.position_embeddings(position_ids)  # (1, seq_len, hidden_dim)
+        
+        token_type_ids = torch.zeros(stage2_embeddings.size(1), dtype=torch.long, device=stage2_embeddings.device).unsqueeze(0)  # (1, seq_len)
+        token_type_embeddings = encoder.embeddings.token_type_embeddings(token_type_ids)  # (1, seq_len, hidden_dim)
+        
+        # 替换：h + position_embedding + token_type_embedding
+        # h 是第一阶段提取的完整 hidden state，但我们需要用第二阶段的位置和类型信息
+        stage2_embeddings[:, it_pos_in_sequence, :] = (
+            h + 
+            position_embeddings[0, it_pos_in_sequence, :] + 
+            token_type_embeddings[0, it_pos_in_sequence, :]
+        )
     
     # 第二阶段编码
     with torch.no_grad():
