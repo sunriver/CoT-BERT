@@ -106,9 +106,17 @@ class ModelArguments:
         default=True,
         metadata={"help": "Whether to use template with [MASK] token"}
     )
-    stage1_template: str = field(
+    stage1_anchor_template: str = field(
         default="The sentence of \"[X]\" means [MASK].",
-        metadata={"help": "Stage 1 template for sentence representation"}
+        metadata={"help": "Anchor template for stage 1 sentence representation"}
+    )
+    stage1_positive_template: str = field(
+        default="The sentence : \"[X]\" means [MASK].",
+        metadata={"help": "Positive template for stage 1 sentence representation"}
+    )
+    stage1_negative_template: str = field(
+        default="The sentence of \"[X]\" doesn't mean [MASK].",
+        metadata={"help": "Negative template for stage 1 sentence representation"}
     )
     stage2_template: str = field(
         default="so [IT_SPECIAL_TOKEN] can be summarized as [MASK].",
@@ -277,49 +285,73 @@ def prepare_features(examples, model_args, data_args, tokenizer):
     sentences = examples['text']
 
     if model_args.mask_embedding_sentence:
-        # 解析第一阶段模版
-        # 模版格式: "The sentence of \"[X]\" means [MASK]."
-        template = model_args.stage1_template
-        parts = template.split('[X]')
-        prefix = parts[0]  # "The sentence of \""
-        suffix = parts[1] if len(parts) > 1 else " means [MASK]."  # "\" means [MASK]."
-        
-        # 编码前缀和后缀（去掉首尾的特殊token）
-        bs = tokenizer.encode(prefix, add_special_tokens=False)
-        es = tokenizer.encode(suffix, add_special_tokens=False)
-        
-        sent_features = {'input_ids': [], 'attention_mask': []}
-        
-        for i, s in enumerate(sentences):
-            # 编码句子内容
-            s = tokenizer.encode(s, add_special_tokens=False)[:data_args.max_seq_length]
-            # 组合: [CLS] + prefix + sentence + suffix + [SEP]
-            sent_features['input_ids'].append([tokenizer.cls_token_id] + bs + s + es + [tokenizer.sep_token_id])
-        
-        # 填充到相同长度
-        ml = max(len(i) for i in sent_features['input_ids'])
-        
-        for i in range(len(sent_features['input_ids'])):
-            t = sent_features['input_ids'][i]
-            sent_features['input_ids'][i] = t + [tokenizer.pad_token_id] * (ml - len(t))
-            sent_features['attention_mask'].append(len(t) * [1] + (ml - len(t)) * [0])
-    else:
-        # 原始编码方式
-        sent_features = {'input_ids': [], 'attention_mask': []}
-        for i, s in enumerate(sentences):
-            s = tokenizer.encode(s, add_special_tokens=False)[:data_args.max_seq_length]
-            sent_features['input_ids'].append(s)
-        
-        ml = max(len(i) for i in sent_features['input_ids'])
-        for i in range(len(sent_features['input_ids'])):
-            t = sent_features['input_ids'][i]
-            sent_features['input_ids'][i] = t + [tokenizer.pad_token_id] * (ml - len(t))
-            sent_features['attention_mask'].append(len(t) * [1] + (ml - len(t)) * [0])
+        templates = [
+            model_args.stage1_negative_template,
+            model_args.stage1_anchor_template,
+            model_args.stage1_positive_template,
+        ]
+        prefixes = []
+        suffixes = []
+        for template in templates:
+            parts = template.split('[X]')
+            prefix = parts[0]
+            suffix = parts[1] if len(parts) > 1 else ""
+            prefixes.append(tokenizer.encode(prefix, add_special_tokens=False))
+            suffixes.append(tokenizer.encode(suffix, add_special_tokens=False))
 
-    # 单视图：每个样本只返回一个视图
+        all_sequences = []
+        for idx in range(len(templates)):
+            all_sequences.append([])
+
+        for sent in sentences:
+            sent_ids = tokenizer.encode(sent, add_special_tokens=False)[:data_args.max_seq_length]
+            for view_idx, _ in enumerate(templates):
+                seq = (
+                    [tokenizer.cls_token_id]
+                    + prefixes[view_idx]
+                    + sent_ids
+                    + suffixes[view_idx]
+                    + [tokenizer.sep_token_id]
+                )
+                all_sequences[view_idx].append(seq)
+
+        max_length = max(len(seq) for view in all_sequences for seq in view)
+
+        sent_features = {'input_ids': [], 'attention_mask': []}
+        for sample_idx in range(total):
+            sample_views_ids = []
+            sample_views_mask = []
+            for view_idx in range(len(templates)):
+                seq = all_sequences[view_idx][sample_idx]
+                pad_len = max_length - len(seq)
+                sample_views_ids.append(seq + [tokenizer.pad_token_id] * pad_len)
+                sample_views_mask.append([1] * len(seq) + [0] * pad_len)
+            sent_features['input_ids'].append(sample_views_ids)
+            sent_features['attention_mask'].append(sample_views_mask)
+    else:
+        sent_features = {'input_ids': [], 'attention_mask': []}
+        for sent in sentences:
+            sent_ids = tokenizer.encode(sent, add_special_tokens=False)[:data_args.max_seq_length]
+            seq = [tokenizer.cls_token_id] + sent_ids + [tokenizer.sep_token_id]
+            sent_features['input_ids'].append([seq, seq, seq])
+        max_length = max(len(seq) for sample in sent_features['input_ids'] for seq in sample)
+        padded_ids = []
+        padded_mask = []
+        for sample in sent_features['input_ids']:
+            sample_ids = []
+            sample_mask = []
+            for seq in sample:
+                pad_len = max_length - len(seq)
+                sample_ids.append(seq + [tokenizer.pad_token_id] * pad_len)
+                sample_mask.append([1] * len(seq) + [0] * pad_len)
+            padded_ids.append(sample_ids)
+            padded_mask.append(sample_mask)
+        sent_features['input_ids'] = padded_ids
+        sent_features['attention_mask'] = padded_mask
+
     features = {}
     for key in sent_features:
-        features[key] = [[sent_features[key][i]] for i in range(total)]
+        features[key] = [sent_features[key][i] for i in range(total)]
 
     return features
 

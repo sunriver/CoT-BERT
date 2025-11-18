@@ -31,6 +31,8 @@ temperature: 0.05
 
 # Template configuration
 mask_embedding_sentence: true
-stage1_template: "The sentence of \"[X]\" means [MASK]."
+stage1_negative_template: "The sentence of \"[X]\" doesn't mean [MASK]."
+stage1_anchor_template: "The sentence of \"[X]\" means [MASK]."
+stage1_positive_template: "The sentence : \"[X]\" means [MASK]."
 stage2_template: "so [IT_SPECIAL_TOKEN] can be summarized as [MASK]."
 

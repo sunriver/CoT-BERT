@@ -81,7 +81,11 @@ class TwoStageCoTTrainer(Trainer):
         if tokenizer is None:
             tokenizer = self.tokenizer
         
-        stage1_template = getattr(self.model_args, 'stage1_template', "The sentence of \"[X]\" means [MASK].")
+        stage1_templates = {
+            "negative": getattr(self.model_args, 'stage1_negative_template', "The sentence of \"[X]\" doesn't mean [MASK]."),
+            "anchor": getattr(self.model_args, 'stage1_anchor_template', "The sentence of \"[X]\" means [MASK]."),
+            "positive": getattr(self.model_args, 'stage1_positive_template', "The sentence : \"[X]\" means [MASK]."),
+        }
         stage2_template = getattr(self.model_args, 'stage2_template', "so [IT_SPECIAL_TOKEN] can be summarized as [MASK].")
         
         # 调用模型前向传播
@@ -89,7 +93,7 @@ class TwoStageCoTTrainer(Trainer):
             input_ids=inputs['input_ids'],
             attention_mask=inputs['attention_mask'],
             token_type_ids=inputs.get('token_type_ids', None),
-            stage1_template=stage1_template,
+            stage1_templates=stage1_templates,
             stage2_template=stage2_template,
             tokenizer=tokenizer,
         )
@@ -124,41 +128,59 @@ class TwoStageCoTTrainer(Trainer):
             # batch是一个句子列表，每个句子是token列表
             sentences = [' '.join(s) for s in batch]
 
-            # 使用第一阶段模版编码每个句子
-            if self.model_args and hasattr(self.model_args, 'mask_embedding_sentence') and self.model_args.mask_embedding_sentence:
-                # 应用第一阶段模版：构造完整模版字符串
-                template = self.model_args.stage1_template
-                parts = template.split('[X]')
-                prefix = parts[0]  # "The sentence of \""
-                suffix = parts[1] if len(parts) > 1 else " means [MASK]."
-                
-                # 为每个句子构造完整的模版字符串
+            use_template = (
+                self.model_args
+                and hasattr(self.model_args, 'mask_embedding_sentence')
+                and self.model_args.mask_embedding_sentence
+            )
+
+            if use_template:
+                templates = [
+                    getattr(self.model_args, 'stage1_negative_template', "The sentence of \"[X]\" doesn't mean [MASK]."),
+                    getattr(self.model_args, 'stage1_anchor_template', "The sentence of \"[X]\" means [MASK]."),
+                    getattr(self.model_args, 'stage1_positive_template', "The sentence : \"[X]\" means [MASK]."),
+                ]
+
                 templated_sentences = []
                 for sent in sentences:
-                    # 构造完整模版字符串："The sentence of "原句子" means [MASK]."
-                    full_text = prefix + sent + suffix
-                    templated_sentences.append(full_text)
-                
-                # 批量编码（利用tokenizer的内置优化）
-                batch_input = self.tokenizer.batch_encode_plus(
+                    for template in templates:
+                        parts = template.split('[X]')
+                        prefix = parts[0]
+                        suffix = parts[1] if len(parts) > 1 else ""
+                        templated_sentences.append(prefix + sent + suffix)
+
+                encoded = self.tokenizer.batch_encode_plus(
                     templated_sentences,
                     return_tensors='pt',
                     padding=True,
                 )
-                for k in batch_input:
-                    batch_input[k] = batch_input[k].to(self.args.device)
+
+                batch_size = len(sentences)
+                num_views = len(templates)
+                seq_len = encoded['input_ids'].size(1)
+
+                batch_input = {}
+                for k, v in encoded.items():
+                    v = v.to(self.args.device)
+                    batch_input[k] = v.view(batch_size, num_views, seq_len)
             else:
-                # 不使用模版，直接编码
-                batch_input = self.tokenizer.batch_encode_plus(
+                encoded = self.tokenizer.batch_encode_plus(
                     sentences,
                     return_tensors='pt',
                     padding=True,
                 )
-                for k in batch_input:
-                    batch_input[k] = batch_input[k].to(self.args.device)
+                batch_input = {}
+                for k, v in encoded.items():
+                    v = v.to(self.args.device)
+                    batch_input[k] = v.unsqueeze(1)
 
             # 获取第二阶段模版
             stage2_template = getattr(self.model_args, 'stage2_template', "so [IT_SPECIAL_TOKEN] can be summarized as [MASK].")
+            stage1_templates = {
+                "negative": getattr(self.model_args, 'stage1_negative_template', "The sentence of \"[X]\" doesn't mean [MASK]."),
+                "anchor": getattr(self.model_args, 'stage1_anchor_template', "The sentence of \"[X]\" means [MASK]."),
+                "positive": getattr(self.model_args, 'stage1_positive_template', "The sentence : \"[X]\" means [MASK]."),
+            }
             
             with torch.no_grad():
                 outputs = self.model(
@@ -166,7 +188,7 @@ class TwoStageCoTTrainer(Trainer):
                     output_hidden_states=True, 
                     return_dict=True, 
                     sent_emb=True,
-                    stage1_template=getattr(self.model_args, 'stage1_template', "The sentence of \"[X]\" means [MASK]."),
+                    stage1_templates=stage1_templates,
                     stage2_template=stage2_template,
                     tokenizer=self.tokenizer,
                 )

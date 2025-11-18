@@ -4,28 +4,35 @@
 
 本项目实现了基于BERT的两阶段思维链分解方法，将原始长模版分解为两个短模版，通过embedding替换机制实现两阶段表示学习。**核心创新**：原始模版 "The sentence of [X] means [mask], so it can be summarized as [mask]." 太长，引入的噪声较大。因此，我们设计了**两阶段思维链分解机制**：
 
-1. **第一阶段**：使用模版1 "The sentence of [X] means [mask]." 获得第一阶段句子表示 h
-2. **第二阶段**：使用模版2 "so [IT_SPECIAL_TOKEN] can be summarized as [mask]."
+1. **第一阶段**：使用三种模版（负例/锚句/正例）分别获得第一阶段句子表示 h_neg, h_anchor, h_pos
+   - 负例模版："The sentence of \"[X]\" doesn't mean [MASK]."
+   - 锚句模版："The sentence of \"[X]\" means [MASK]."
+   - 正例模版："The sentence : \"[X]\" means [MASK]."
+2. **第二阶段**：将三个 h 分别注入模版2 "so [IT_SPECIAL_TOKEN] can be summarized as [MASK]."，得到三个 h_plus
    - 获取模版 embedding 矩阵
    - 将 [IT_SPECIAL_TOKEN] 位置的 token embedding 替换为第一阶段得到的 h
-   - 将新的 embedding 矩阵输入到 BERT，得到第二阶段的 mask 表示 h+
+   - 将新的 embedding 矩阵输入到 BERT，得到第二阶段的 mask 表示 h_plus
 
-训练阶段使用 InfoNCE 损失，正样本对为 (h, h+)，负样本对为 h+ 和批次中其他句子的 h+。
+训练阶段使用 InfoNCE 损失，正样本对为 (h_anchor_plus, h_pos_plus)，负样本为 h_neg_plus 及批次中其他句子的 h_plus。
 
 ## 核心创新
 
 ### 1. 两阶段思维链分解 ⭐⭐⭐⭐⭐
 - **问题**：原始长模版 "The sentence of [X] means [mask], so it can be summarized as [mask]." 太长，引入的噪声较大
-- **解决方案**：将思维链分拆成两步
-  - **第一步**：使用模版1 "The sentence of [X] means [mask]." 获得第一阶段句子表示 h
-  - **第二步**：使用模版2 "so [IT_SPECIAL_TOKEN] can be summarized as [mask]."
+- **解决方案**：将思维链分拆成两步，并使用三种模版增强对比学习
+  - **第一步**：使用三种模版分别获得第一阶段句子表示
+    - 负例模版："The sentence of \"[X]\" doesn't mean [MASK]." → h_neg
+    - 锚句模版："The sentence of \"[X]\" means [MASK]." → h_anchor
+    - 正例模版："The sentence : \"[X]\" means [MASK]." → h_pos
+  - **第二步**：将三个 h 分别注入模版2 "so [IT_SPECIAL_TOKEN] can be summarized as [MASK]."
     - 获取模版 embedding 矩阵
-    - 将 [IT_SPECIAL_TOKEN] 位置的 token embedding 替换为 h
-    - 输入到 BERT 得到 h+
+    - 将 [IT_SPECIAL_TOKEN] 位置的 token embedding 替换为对应的 h
+    - 输入到 BERT 得到三个 h_plus (h_neg_plus, h_anchor_plus, h_pos_plus)
 - **优势**：
   - 降低模版长度，减少噪声
   - 通过两阶段处理提高表示质量
   - 保持思维链的连贯性
+  - 使用三种模版增强对比学习效果
 
 ### 2. Embedding 替换机制 ⭐⭐⭐⭐⭐
 - **核心机制**：将第一阶段得到的句子表示 h 替换到第二阶段模版中 [IT_SPECIAL_TOKEN] 位置的 token embedding
@@ -41,12 +48,13 @@
 
 ### 3. InfoNCE 对比学习 ⭐⭐⭐⭐
 - **损失函数**：InfoNCE 损失
-- **正样本对**：(h, h+)
-- **负样本对**：h+ 和批次中其他句子的 h+
+- **正样本对**：(h_anchor_plus, h_pos_plus) - 锚句与正例的第二阶段表示
+- **负样本对**：h_neg_plus（负例的第二阶段表示）及批次中其他句子的 h_plus
 - **优势**：
   - 简单有效的对比学习
-  - 充分利用批次内负样本
+  - 充分利用批次内负样本和负例模版
   - 提高表示质量
+  - 通过三种模版增强对比学习效果
 
 ## 项目结构
 
@@ -75,10 +83,14 @@ TwoStageCoT-BERT/
 
 ### 1. 两阶段模版处理
 
-#### 第一阶段模版
-- **模版格式**：`"The sentence of \"[X]\" means [MASK]."`
-- **作用**：获得第一阶段句子表示 h
-- **表示提取**：从 [MASK] 位置的 BERT 隐藏状态提取句子语义表示 h
+#### 第一阶段模版（三种）
+- **负例模版**：`"The sentence of \"[X]\" doesn't mean [MASK]."`
+  - 作用：获得负例句子表示 h_neg
+- **锚句模版**：`"The sentence of \"[X]\" means [MASK]."`
+  - 作用：获得锚句句子表示 h_anchor
+- **正例模版**：`"The sentence : \"[X]\" means [MASK]."`
+  - 作用：获得正例句子表示 h_pos
+- **表示提取**：从 [MASK] 位置的 BERT 隐藏状态提取句子语义表示
 
 #### 第二阶段模版
 - **模版格式**：`"so [IT_SPECIAL_TOKEN] can be summarized as [MASK]."`
@@ -103,19 +115,22 @@ TwoStageCoT-BERT/
 
 **损失函数**：
 ```
-L = InfoNCE(h, h+)
+L = InfoNCE(h_anchor_plus, h_pos_plus, h_neg_plus, h_plus_batch)
 ```
 
 其中：
-- **正样本对**：(h[i], h+[i])
-- **负样本对**：(h+[i], h+[j]), i ≠ j
+- **正样本对**：(h_anchor_plus[i], h_pos_plus[i]) - 同一句子的锚句与正例第二阶段表示
+- **负样本对**：
+  - h_neg_plus[i] - 同一句子的负例第二阶段表示
+  - h_plus_batch[j] - 批次中其他句子的所有 h_plus (j ≠ i)
 
 **计算方式**：
-1. 归一化 h 和 h+
-2. 计算正样本对相似度
-3. 计算负样本对相似度（批次内其他样本）
-4. 组合相似度矩阵
-5. 使用 CrossEntropyLoss 计算对比损失
+1. 归一化所有 h_plus 表示
+2. 计算正样本对相似度 (h_anchor_plus, h_pos_plus)
+3. 构建负样本候选池：包含 h_neg_plus 和批次中所有其他句子的 h_plus
+4. 计算锚句与所有候选的相似度
+5. 排除自身（锚句和正例）后，组合相似度矩阵
+6. 使用 CrossEntropyLoss 计算对比损失
 
 ## 使用方法
 
@@ -154,7 +169,9 @@ python two_stage_cot_train.py configs/evaluation_default.yaml
 - `train_file`: 训练数据文件
 - `output_dir`: 输出目录
 - `temperature`: InfoNCE损失温度参数（默认0.05）
-- `stage1_template`: 第一阶段模版（默认 "The sentence of \"[X]\" means [MASK]."）
+- `stage1_negative_template`: 第一阶段负例模版（默认 "The sentence of \"[X]\" doesn't mean [MASK]."）
+- `stage1_anchor_template`: 第一阶段锚句模版（默认 "The sentence of \"[X]\" means [MASK]."）
+- `stage1_positive_template`: 第一阶段正例模版（默认 "The sentence : \"[X]\" means [MASK]."）
 - `stage2_template`: 第二阶段模版（默认 "so [IT_SPECIAL_TOKEN] can be summarized as [MASK]."）
 
 ### 评估配置

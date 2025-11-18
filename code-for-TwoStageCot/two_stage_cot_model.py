@@ -49,33 +49,33 @@ def two_stage_cot_forward(cls,
                           output_hidden_states=None,
                           labels=None,
                           return_dict=None,
-                          stage1_template=None,
+                          stage1_templates=None,
                           stage2_template=None,
                           tokenizer=None,
 ):
     """
     两阶段思维链前向传播函数
-    实现两阶段模版处理：
-    1. 第一阶段：使用模版1 "The sentence of [X] means [mask]." 获得 h
-    2. 第二阶段：使用模版2 "so [IT_SPECIAL_TOKEN] can be summarized as [mask]."
-       - 获取模版 embedding 矩阵
-       - 将 [IT_SPECIAL_TOKEN] 位置的 token embedding 替换为 h
-       - 输入到 BERT 得到 h+
+    1. 第一阶段：分别处理负例/锚句/正例模版，提取各自的 h 表示
+    2. 第二阶段：将对应的 h 注入 stage2 模版，得到 h_plus
+    3. InfoNCE：以锚句与正例为正样本对，负例及跨样本表示作为负样本
     """
     return_dict = return_dict if return_dict is not None else cls.config.use_return_dict
-    
-    batch_size = input_ids.size(0)
-    num_sent = input_ids.size(1) if len(input_ids.shape) == 3 else 1
 
-    # Flatten input for encoding
-    if len(input_ids.shape) == 3:
-        input_ids = input_ids.view((-1, input_ids.size(-1)))
-        attention_mask = attention_mask.view((-1, attention_mask.size(-1)))
+    if input_ids is None:
+        raise ValueError("input_ids 不能为空")
+
+    if input_ids.dim() == 3:
+        batch_size = input_ids.size(0)
+        num_sent = input_ids.size(1)
+        input_ids = input_ids.view(-1, input_ids.size(-1))
+        if attention_mask is not None:
+            attention_mask = attention_mask.view(-1, attention_mask.size(-1))
         if token_type_ids is not None:
-            token_type_ids = token_type_ids.view((-1, token_type_ids.size(-1)))
+            token_type_ids = token_type_ids.view(-1, token_type_ids.size(-1))
+    else:
+        batch_size = input_ids.size(0)
+        num_sent = 1
 
-    # ========== 第一阶段：使用模版1获得 h ==========
-    # 第一阶段已经通过 input_ids 传入，直接编码
     stage1_outputs = encoder(
         input_ids=input_ids,
         attention_mask=attention_mask,
@@ -88,155 +88,150 @@ def two_stage_cot_forward(cls,
         return_dict=True,
     )
 
-    # 提取第一阶段句子表示 h：从 [MASK] 位置提取（向量化实现）
-    mask_token_id = cls.config.mask_token_id if hasattr(cls.config, 'mask_token_id') else 103
-    
-    # 创建 MASK 位置的布尔张量
-    mask = input_ids == mask_token_id  # (batch_size * num_sent, seq_len)
-    
-    # 找到每个样本第一个 MASK 的位置（如果没有 MASK，argmax 返回 0，对应 CLS token）
-    mask_positions = mask.long().argmax(dim=-1)  # (batch_size * num_sent,)
-    
-    # 使用高级索引提取对应的 hidden states
+    mask_token_id = cls.config.mask_token_id if hasattr(cls.config, "mask_token_id") else 103
+    mask = input_ids == mask_token_id
+    mask_positions = mask.long().argmax(dim=-1)
     batch_indices = torch.arange(input_ids.size(0), device=input_ids.device)
-    h = stage1_outputs.last_hidden_state[batch_indices, mask_positions]  # (batch_size * num_sent, hidden_dim)
-    
-    # 重塑为 (batch_size, num_sent, hidden_dim)
-    if num_sent > 1:
-        h = h.view(batch_size, num_sent, -1)
-        h = h[:, 0]  # 取第一个视图
-    # h shape: (batch_size, hidden_dim)
+    h_flat = stage1_outputs.last_hidden_state[batch_indices, mask_positions]
+    h = h_flat.view(batch_size, num_sent, -1)
 
-    # ========== 第二阶段：使用模版2获得 h+ ==========
-    # 准备第二阶段模版
     if stage2_template is None:
         stage2_template = "so [IT_SPECIAL_TOKEN] can be summarized as [MASK]."
-    
-    # 获取模版2的 token ids（不包含特殊token）
+
     stage2_template_ids = tokenizer.encode(stage2_template, add_special_tokens=False)
-    
-    # 找到 [IT_SPECIAL_TOKEN] 的位置（在模版中）
-    # 使用特殊 token [IT_SPECIAL_TOKEN] 而不是普通词 "it"
-    it_token_id = tokenizer.convert_tokens_to_ids('[IT_SPECIAL_TOKEN]')
-    
-    # 找到模版中 [IT_SPECIAL_TOKEN] 的位置
+    it_token_id = tokenizer.convert_tokens_to_ids("[IT_SPECIAL_TOKEN]")
     it_pos_in_template = None
     if it_token_id is not None and it_token_id != tokenizer.unk_token_id:
         for idx, tid in enumerate(stage2_template_ids):
             if tid == it_token_id:
                 it_pos_in_template = idx
                 break
-    
-    # 构建完整的第二阶段输入（添加特殊token）
-    # [CLS] + stage2_template + [SEP]
+
+    flat_batch = h_flat.size(0)
     stage2_input_ids = []
     stage2_attention_masks = []
-    
-    for i in range(batch_size):
-        # 构建输入： [CLS] + template_tokens + [SEP]
-        stage2_ids = [tokenizer.cls_token_id] + stage2_template_ids + [tokenizer.sep_token_id]
-        stage2_input_ids.append(stage2_ids)
-        stage2_attention_masks.append([1] * len(stage2_ids))
-    
-    # Padding 到相同长度
+    for _ in range(flat_batch):
+        ids = [tokenizer.cls_token_id] + stage2_template_ids + [tokenizer.sep_token_id]
+        stage2_input_ids.append(ids)
+        stage2_attention_masks.append([1] * len(ids))
+
     max_len = max(len(ids) for ids in stage2_input_ids)
-    for i in range(batch_size):
+    for i in range(flat_batch):
         pad_len = max_len - len(stage2_input_ids[i])
         stage2_input_ids[i].extend([tokenizer.pad_token_id] * pad_len)
         stage2_attention_masks[i].extend([0] * pad_len)
-    
-    stage2_input_ids = torch.tensor(stage2_input_ids, device=input_ids.device, dtype=torch.long)
-    stage2_attention_mask = torch.tensor(stage2_attention_masks, device=input_ids.device, dtype=torch.long)
-    
-    # 获取模版 embedding（包含 token + position + token_type）
-    stage2_embeddings = encoder.embeddings(stage2_input_ids)  # (batch_size, seq_len, hidden_dim)
-    
-    # 找到 [IT_SPECIAL_TOKEN] 在完整序列中的位置（考虑 [CLS]）
+
+    stage2_input_ids = torch.tensor(stage2_input_ids, device=h_flat.device, dtype=torch.long)
+    stage2_attention_mask = torch.tensor(stage2_attention_masks, device=h_flat.device, dtype=torch.long)
+
+    stage2_embeddings = encoder.embeddings(stage2_input_ids)
+
     if it_pos_in_template is not None:
-        it_pos_in_sequence = it_pos_in_template + 1  # +1 因为前面有 [CLS]
-        
-        # 只替换 token embedding 部分，保留 position 和 token type embeddings
-        # 获取该位置的 position 和 token type embeddings
-        position_ids = torch.arange(stage2_embeddings.size(1), device=stage2_embeddings.device).unsqueeze(0)  # (1, seq_len)
-        position_embeddings = encoder.embeddings.position_embeddings(position_ids)  # (1, seq_len, hidden_dim)
-        
-        token_type_ids = torch.zeros(stage2_embeddings.size(1), dtype=torch.long, device=stage2_embeddings.device).unsqueeze(0)  # (1, seq_len)
-        token_type_embeddings = encoder.embeddings.token_type_embeddings(token_type_ids)  # (1, seq_len, hidden_dim)
-        
-        # 替换：h + position_embedding + token_type_embedding
-        # h 是第一阶段提取的完整 hidden state，但我们需要用第二阶段的位置和类型信息
-        stage2_embeddings[:, it_pos_in_sequence, :] = (
-            h + 
-            position_embeddings[0, it_pos_in_sequence, :] + 
-            token_type_embeddings[0, it_pos_in_sequence, :]
+        it_pos_in_sequence = it_pos_in_template + 1
+        position_ids_full = torch.arange(stage2_embeddings.size(1), device=stage2_embeddings.device).unsqueeze(0)
+        position_embeddings = encoder.embeddings.position_embeddings(position_ids_full)
+
+        token_type_zero = torch.zeros(
+            (1, stage2_embeddings.size(1)),
+            dtype=torch.long,
+            device=stage2_embeddings.device,
         )
-    
-    # 使用替换后的 embedding 输入到 BERT
+        token_type_embeddings = encoder.embeddings.token_type_embeddings(token_type_zero)
+
+        replacement = (
+            h_flat
+            + position_embeddings[0, it_pos_in_sequence, :].unsqueeze(0)
+            + token_type_embeddings[0, it_pos_in_sequence, :].unsqueeze(0)
+        )
+        stage2_embeddings[:, it_pos_in_sequence, :] = replacement
+
     stage2_outputs = encoder(
-        input_ids=None,  # 使用 inputs_embeds 而不是 input_ids
+        input_ids=None,
         attention_mask=stage2_attention_mask,
         token_type_ids=None,
         position_ids=None,
         head_mask=head_mask,
-        inputs_embeds=stage2_embeddings,  # 使用替换后的 embedding
+        inputs_embeds=stage2_embeddings,
         output_attentions=output_attentions,
         output_hidden_states=False,
         return_dict=True,
     )
-    
-    # 提取第二阶段句子表示 h+：从 [MASK] 位置提取（向量化实现）
-    # 创建 MASK 位置的布尔张量
-    mask = stage2_input_ids == mask_token_id  # (batch_size, seq_len)
-    
-    # 找到每个样本第一个 MASK 的位置（如果没有 MASK，argmax 返回 0，对应 CLS token）
-    mask_positions = mask.long().argmax(dim=-1)  # (batch_size,)
-    
-    # 使用高级索引提取对应的 hidden states
-    batch_indices = torch.arange(batch_size, device=stage2_input_ids.device)
-    h_plus = stage2_outputs.last_hidden_state[batch_indices, mask_positions]  # (batch_size, hidden_dim)
 
-    # ========== 计算 InfoNCE 损失 ==========
-    # 正样本对：(h, h+)
-    # 负样本对：h+ 和批次中其他句子的 h+
-    
-    loss_fct = nn.CrossEntropyLoss()
-    
-    # 归一化用于计算相似度（添加小的epsilon避免零向量导致NaN）
+    mask_stage2 = stage2_input_ids == mask_token_id
+    mask_positions_stage2 = mask_stage2.long().argmax(dim=-1)
+    batch_indices_stage2 = torch.arange(stage2_input_ids.size(0), device=stage2_input_ids.device)
+    h_plus_flat = stage2_outputs.last_hidden_state[batch_indices_stage2, mask_positions_stage2]
+    h_plus = h_plus_flat.view(batch_size, num_sent, -1)
+
     eps = 1e-8
-    h_norm = F.normalize(h, p=2, dim=-1, eps=eps)
-    h_plus_norm = F.normalize(h_plus, p=2, dim=-1, eps=eps)
-    
-    # 计算正样本对相似度（h[i] 与 h_plus[i]）
-    pos_sim = (h_norm * h_plus_norm).sum(dim=-1, keepdim=True) / cls.temperature  # (batch_size, 1)
-    pos_sim = torch.clamp(pos_sim, min=-50.0, max=50.0)
-    
-    # 计算负样本对相似度（h_plus[i] 与 h_plus[j], i != j）
-    neg_sim = torch.mm(h_plus_norm, h_plus_norm.t()) / cls.temperature  # (batch_size, batch_size)
-    
-    # 将对角线位置设为负无穷（排除自己）
-    eye_mask = torch.eye(batch_size, device=h_norm.device, dtype=torch.bool)
-    neg_sim = neg_sim.masked_fill(eye_mask, float('-inf'))
-    
-    # 数值稳定性保护
-    neg_sim = torch.clamp(neg_sim, min=-50.0, max=50.0)
-    neg_sim = neg_sim.masked_fill(eye_mask, float('-inf'))
-    
-    # 组合相似度矩阵：[正样本对, 负样本对]
-    cos_sim = torch.cat([pos_sim, neg_sim], dim=1)  # (batch_size, batch_size + 1)
-    
-    # 标签：第一列（索引0）是正样本对
-    labels_infonce = torch.zeros(batch_size, dtype=torch.long, device=h_norm.device)
-    
-    # 计算 InfoNCE 损失
-    loss = loss_fct(cos_sim, labels_infonce)
-    
-    # 使用 h+ 作为输出表示
-    logits = h_plus
+    loss = None
+    logits = None
+    loss_fct = nn.CrossEntropyLoss()
+
+    if num_sent >= 3:
+        # 提取三个模版的第二阶段表示
+        neg_vec = h_plus[:, 0, :]  # 负例模版的 h_plus
+        anchor_vec = h_plus[:, 1, :]  # 锚句模版的 h_plus
+        pos_vec = h_plus[:, 2, :]  # 正例模版的 h_plus
+
+        # 归一化
+        neg_norm = F.normalize(neg_vec, p=2, dim=-1, eps=eps)
+        anchor_norm = F.normalize(anchor_vec, p=2, dim=-1, eps=eps)
+        pos_norm = F.normalize(pos_vec, p=2, dim=-1, eps=eps)
+
+        # 正样本对：锚句与正例的第二阶段表示
+        pos_sim = (anchor_norm * pos_norm).sum(dim=-1, keepdim=True) / cls.temperature
+        pos_sim = torch.clamp(pos_sim, min=-50.0, max=50.0)
+
+        # 构建负样本候选池：
+        # 包含所有batch的所有h_plus（neg、anchor、pos），然后排除当前batch的anchor和pos
+        h_plus_flat = h_plus.view(-1, h_plus.size(-1))  # (batch_size * 3, hidden_dim)
+        h_plus_flat_norm = F.normalize(h_plus_flat, p=2, dim=-1, eps=eps)
+        
+        # 负样本候选池：所有batch的所有h_plus（包括neg、anchor、pos）
+        candidate_bank = h_plus_flat_norm  # (batch_size * 3, hidden_dim)
+        
+        # 计算锚句与所有候选的相似度
+        neg_sim = torch.mm(anchor_norm, candidate_bank.t()) / cls.temperature
+        neg_sim = torch.clamp(neg_sim, min=-50.0, max=50.0)
+
+        # 排除自身：当前batch的anchor和pos不应该作为负样本
+        batch_range = torch.arange(batch_size, device=anchor_norm.device)
+        # 排除当前batch的anchor (索引: batch_size + batch_range，因为h_plus顺序是[neg, anchor, pos])
+        neg_sim[:, batch_size + batch_range] = float("-inf")
+        # 排除当前batch的pos (索引: 2 * batch_size + batch_range)
+        neg_sim[:, 2 * batch_size + batch_range] = float("-inf")
+
+        # 组合相似度矩阵：[正样本对, 负样本对]
+        cos_sim = torch.cat([pos_sim, neg_sim], dim=1)
+        labels_infonce = torch.zeros(batch_size, dtype=torch.long, device=anchor_norm.device)
+        loss = loss_fct(cos_sim, labels_infonce)
+        logits = anchor_vec
+    else:
+        h_single = h.squeeze(1)
+        h_plus_single = h_plus.squeeze(1)
+
+        h_norm = F.normalize(h_single, p=2, dim=-1, eps=eps)
+        h_plus_norm = F.normalize(h_plus_single, p=2, dim=-1, eps=eps)
+
+        pos_sim = (h_norm * h_plus_norm).sum(dim=-1, keepdim=True) / cls.temperature
+        pos_sim = torch.clamp(pos_sim, min=-50.0, max=50.0)
+
+        neg_sim = torch.mm(h_plus_norm, h_plus_norm.t()) / cls.temperature
+        eye_mask = torch.eye(batch_size, device=h_norm.device, dtype=torch.bool)
+        neg_sim = neg_sim.masked_fill(eye_mask, float("-inf"))
+        neg_sim = torch.clamp(neg_sim, min=-50.0, max=50.0)
+        neg_sim = neg_sim.masked_fill(eye_mask, float("-inf"))
+
+        cos_sim = torch.cat([pos_sim, neg_sim], dim=1)
+        labels_infonce = torch.zeros(batch_size, dtype=torch.long, device=h_norm.device)
+        loss = loss_fct(cos_sim, labels_infonce)
+        logits = h_plus_single
 
     if not return_dict:
         output = (logits,) + stage2_outputs[2:]
         return ((loss,) + output) if loss is not None else output
-    
+
     return SequenceClassifierOutput(
         loss=loss,
         logits=logits,
@@ -258,18 +253,28 @@ def sentemb_forward(
     output_attentions=None,
     output_hidden_states=None,
     return_dict=None,
-    stage1_template=None,
+    stage1_templates=None,
     stage2_template=None,
     tokenizer=None,
 ):
     """
     句子嵌入前向传播（用于评估）
-    返回两阶段处理后的句子表示 h+
-    支持SentEval STS任务：每个句子独立处理
+    默认使用锚句模版对应的 h_plus 作为句子表示
     """
     return_dict = return_dict if return_dict is not None else cls.config.use_return_dict
 
-    # 第一阶段：使用模版1编码句子
+    if input_ids.dim() == 3:
+        batch_size = input_ids.size(0)
+        num_sent = input_ids.size(1)
+        input_ids = input_ids.view(-1, input_ids.size(-1))
+        if attention_mask is not None:
+            attention_mask = attention_mask.view(-1, attention_mask.size(-1))
+        if token_type_ids is not None:
+            token_type_ids = token_type_ids.view(-1, token_type_ids.size(-1))
+    else:
+        batch_size = input_ids.size(0)
+        num_sent = 1
+
     stage1_outputs = encoder(
         input_ids=input_ids,
         attention_mask=attention_mask,
@@ -282,79 +287,60 @@ def sentemb_forward(
         return_dict=True,
     )
 
-    # 提取第一阶段句子表示 h：从 [MASK] 位置提取（向量化实现）
-    mask_token_id = cls.config.mask_token_id if hasattr(cls.config, 'mask_token_id') else 103
-    batch_size = input_ids.size(0)
-    
-    # 创建 MASK 位置的布尔张量
-    mask = input_ids == mask_token_id  # (batch_size, seq_len)
-    
-    # 找到每个样本第一个 MASK 的位置（如果没有 MASK，argmax 返回 0，对应 CLS token）
-    mask_positions = mask.long().argmax(dim=-1)  # (batch_size,)
-    
-    # 使用高级索引提取对应的 hidden states
-    batch_indices = torch.arange(batch_size, device=input_ids.device)
-    h = stage1_outputs.last_hidden_state[batch_indices, mask_positions]  # (batch_size, hidden_dim)
+    mask_token_id = cls.config.mask_token_id if hasattr(cls.config, "mask_token_id") else 103
+    mask = input_ids == mask_token_id
+    mask_positions = mask.long().argmax(dim=-1)
+    batch_indices = torch.arange(input_ids.size(0), device=input_ids.device)
+    h_flat = stage1_outputs.last_hidden_state[batch_indices, mask_positions]
 
-    # 第二阶段：使用模版2获得 h+
     if stage2_template is None:
         stage2_template = "so [IT_SPECIAL_TOKEN] can be summarized as [MASK]."
-    
+
     stage2_template_ids = tokenizer.encode(stage2_template, add_special_tokens=False)
-    
-    # 找到 [IT_SPECIAL_TOKEN] 的位置（在模版中）
-    # 使用特殊 token [IT_SPECIAL_TOKEN] 而不是普通词 "it"
-    it_token_id = tokenizer.convert_tokens_to_ids('[IT_SPECIAL_TOKEN]')
-    
-    # 找到模版中 [IT_SPECIAL_TOKEN] 的位置
+    it_token_id = tokenizer.convert_tokens_to_ids("[IT_SPECIAL_TOKEN]")
     it_pos_in_template = None
     if it_token_id is not None and it_token_id != tokenizer.unk_token_id:
         for idx, tid in enumerate(stage2_template_ids):
             if tid == it_token_id:
                 it_pos_in_template = idx
                 break
-    
-    # 构建第二阶段输入
+
+    flat_batch = h_flat.size(0)
     stage2_input_ids = []
     stage2_attention_masks = []
-    
-    for i in range(batch_size):
-        stage2_ids = [tokenizer.cls_token_id] + stage2_template_ids + [tokenizer.sep_token_id]
-        stage2_input_ids.append(stage2_ids)
-        stage2_attention_masks.append([1] * len(stage2_ids))
-    
+    for _ in range(flat_batch):
+        ids = [tokenizer.cls_token_id] + stage2_template_ids + [tokenizer.sep_token_id]
+        stage2_input_ids.append(ids)
+        stage2_attention_masks.append([1] * len(ids))
+
     max_len = max(len(ids) for ids in stage2_input_ids)
-    for i in range(batch_size):
+    for i in range(flat_batch):
         pad_len = max_len - len(stage2_input_ids[i])
         stage2_input_ids[i].extend([tokenizer.pad_token_id] * pad_len)
         stage2_attention_masks[i].extend([0] * pad_len)
-    
-    stage2_input_ids = torch.tensor(stage2_input_ids, device=input_ids.device, dtype=torch.long)
-    stage2_attention_mask = torch.tensor(stage2_attention_masks, device=input_ids.device, dtype=torch.long)
-    
-    # 获取模版 embedding（包含 token + position + token_type）
+
+    stage2_input_ids = torch.tensor(stage2_input_ids, device=h_flat.device, dtype=torch.long)
+    stage2_attention_mask = torch.tensor(stage2_attention_masks, device=h_flat.device, dtype=torch.long)
+
     stage2_embeddings = encoder.embeddings(stage2_input_ids)
-    
+
     if it_pos_in_template is not None:
         it_pos_in_sequence = it_pos_in_template + 1
-        
-        # 只替换 token embedding 部分，保留 position 和 token type embeddings
-        # 获取该位置的 position 和 token type embeddings
-        position_ids = torch.arange(stage2_embeddings.size(1), device=stage2_embeddings.device).unsqueeze(0)  # (1, seq_len)
-        position_embeddings = encoder.embeddings.position_embeddings(position_ids)  # (1, seq_len, hidden_dim)
-        
-        token_type_ids = torch.zeros(stage2_embeddings.size(1), dtype=torch.long, device=stage2_embeddings.device).unsqueeze(0)  # (1, seq_len)
-        token_type_embeddings = encoder.embeddings.token_type_embeddings(token_type_ids)  # (1, seq_len, hidden_dim)
-        
-        # 替换：h + position_embedding + token_type_embedding
-        # h 是第一阶段提取的完整 hidden state，但我们需要用第二阶段的位置和类型信息
-        stage2_embeddings[:, it_pos_in_sequence, :] = (
-            h + 
-            position_embeddings[0, it_pos_in_sequence, :] + 
-            token_type_embeddings[0, it_pos_in_sequence, :]
+        position_ids_full = torch.arange(stage2_embeddings.size(1), device=stage2_embeddings.device).unsqueeze(0)
+        position_embeddings = encoder.embeddings.position_embeddings(position_ids_full)
+        token_type_zero = torch.zeros(
+            (1, stage2_embeddings.size(1)),
+            dtype=torch.long,
+            device=stage2_embeddings.device,
         )
-    
-    # 第二阶段编码
+        token_type_embeddings = encoder.embeddings.token_type_embeddings(token_type_zero)
+        replacement = (
+            h_flat
+            + position_embeddings[0, it_pos_in_sequence, :].unsqueeze(0)
+            + token_type_embeddings[0, it_pos_in_sequence, :].unsqueeze(0)
+        )
+        stage2_embeddings[:, it_pos_in_sequence, :] = replacement
+
     with torch.no_grad():
         stage2_outputs = encoder(
             input_ids=None,
@@ -367,19 +353,18 @@ def sentemb_forward(
             output_hidden_states=False,
             return_dict=True,
         )
-        
-        # 提取 h+（向量化实现）
-        # 创建 MASK 位置的布尔张量
-        mask = stage2_input_ids == mask_token_id  # (batch_size, seq_len)
-        
-        # 找到每个样本第一个 MASK 的位置（如果没有 MASK，argmax 返回 0，对应 CLS token）
-        mask_positions = mask.long().argmax(dim=-1)  # (batch_size,)
-        
-        # 使用高级索引提取对应的 hidden states
-        batch_indices = torch.arange(batch_size, device=stage2_input_ids.device)
-        pooler_output = stage2_outputs.last_hidden_state[batch_indices, mask_positions]  # (batch_size, hidden_dim)
-        
-        # 归一化最终输出用于评估（添加小的epsilon避免零向量导致NaN）
+
+        mask_stage2 = stage2_input_ids == mask_token_id
+        mask_positions_stage2 = mask_stage2.long().argmax(dim=-1)
+        batch_indices_stage2 = torch.arange(stage2_input_ids.size(0), device=stage2_input_ids.device)
+        pooler_flat = stage2_outputs.last_hidden_state[batch_indices_stage2, mask_positions_stage2]
+        pooler_all = pooler_flat.view(batch_size, num_sent, -1)
+
+        if num_sent >= 3:
+            pooler_output = pooler_all[:, 1, :]
+        else:
+            pooler_output = pooler_all.squeeze(1)
+
         eps = 1e-8
         pooler_output = F.normalize(pooler_output, p=2, dim=-1, eps=eps)
 
@@ -447,7 +432,7 @@ class BertForTwoStageCoT(BertPreTrainedModel):
         output_hidden_states=None,
         return_dict=None,
         sent_emb=False,
-        stage1_template=None,
+        stage1_templates=None,
         stage2_template=None,
         tokenizer=None,
     ):
@@ -463,7 +448,7 @@ class BertForTwoStageCoT(BertPreTrainedModel):
                 output_attentions=output_attentions,
                 output_hidden_states=output_hidden_states,
                 return_dict=return_dict,
-                stage1_template=stage1_template,
+                stage1_templates=stage1_templates,
                 stage2_template=stage2_template,
                 tokenizer=tokenizer,
             )
@@ -479,7 +464,7 @@ class BertForTwoStageCoT(BertPreTrainedModel):
                 output_attentions=output_attentions,
                 output_hidden_states=output_hidden_states,
                 return_dict=return_dict,
-                stage1_template=stage1_template,
+                stage1_templates=stage1_templates,
                 stage2_template=stage2_template,
                 tokenizer=tokenizer,
             )

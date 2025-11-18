@@ -115,9 +115,17 @@ class ModelArguments:
         default=False,
         metadata={"help": "Whether to use template with [MASK] token (not used in evaluation)"}
     )
-    stage1_template: str = field(
+    stage1_anchor_template: str = field(
         default="The sentence of \"[X]\" means [MASK].",
-        metadata={"help": "Stage 1 template for sentence representation"}
+        metadata={"help": "Anchor template for stage 1 sentence representation"}
+    )
+    stage1_positive_template: str = field(
+        default="The sentence : \"[X]\" means [MASK].",
+        metadata={"help": "Positive template for stage 1 sentence representation"}
+    )
+    stage1_negative_template: str = field(
+        default="The sentence of \"[X]\" doesn't mean [MASK].",
+        metadata={"help": "Negative template for stage 1 sentence representation"}
     )
     stage2_template: str = field(
         default="so [IT_SPECIAL_TOKEN] can be summarized as [MASK].",
@@ -436,49 +444,67 @@ def main():
             # batch是一个句子列表，每个句子是token列表
             sentences = [' '.join(s) for s in batch]
 
-            # 使用模板编码每个句子（与训练时保持一致）
-            if model_args and hasattr(model_args, 'mask_embedding_sentence') and model_args.mask_embedding_sentence:
-                # 应用模板：构造完整模板字符串（优化：利用tokenizer批量处理）
-                template = model_args.stage1_template
-                parts = template.split('[X]')
-                prefix = parts[0]  # "The sentence of \""
-                suffix = parts[1] if len(parts) > 1 else " means [MASK]."
-                
-                # 为每个句子构造完整的模板字符串
+            use_template = (
+                model_args
+                and hasattr(model_args, 'mask_embedding_sentence')
+                and model_args.mask_embedding_sentence
+            )
+
+            if use_template:
+                templates = [
+                    getattr(model_args, 'stage1_negative_template', "The sentence of \"[X]\" doesn't mean [MASK]."),
+                    getattr(model_args, 'stage1_anchor_template', "The sentence of \"[X]\" means [MASK]."),
+                    getattr(model_args, 'stage1_positive_template', "The sentence : \"[X]\" means [MASK]."),
+                ]
+
                 templated_sentences = []
                 for sent in sentences:
-                    # 构造完整模板字符串："The sentence of "原句子" means [MASK]."
-                    full_text = prefix + sent + suffix
-                    templated_sentences.append(full_text)
-                
-                # 批量编码（利用tokenizer的内置优化）
-                batch_input = tokenizer.batch_encode_plus(
+                    for template in templates:
+                        parts = template.split('[X]')
+                        prefix = parts[0]
+                        suffix = parts[1] if len(parts) > 1 else ""
+                        templated_sentences.append(prefix + sent + suffix)
+
+                encoded = tokenizer.batch_encode_plus(
                     templated_sentences,
                     return_tensors='pt',
                     padding=True,
                 )
-                for k in batch_input:
-                    batch_input[k] = batch_input[k].to(device) if batch_input[k] is not None else None
+
+                batch_size = len(sentences)
+                num_views = len(templates)
+                seq_len = encoded['input_ids'].size(1)
+
+                batch_input = {}
+                for k, tensor in encoded.items():
+                    tensor = tensor.to(device)
+                    batch_input[k] = tensor.view(batch_size, num_views, seq_len)
             else:
-                # 不使用模板，直接编码
-                batch_input = tokenizer.batch_encode_plus(
+                encoded = tokenizer.batch_encode_plus(
                     sentences,
                     return_tensors='pt',
                     padding=True,
                 )
-                for k in batch_input:
-                    batch_input[k] = batch_input[k].to(device) if batch_input[k] is not None else None
+                batch_input = {}
+                for k, tensor in encoded.items():
+                    tensor = tensor.to(device)
+                    batch_input[k] = tensor.unsqueeze(1)
 
             # Get sentence embeddings using sentemb_forward
             # sentemb_forward会提取mask位置，进行两阶段处理等流程
             with torch.no_grad():
+                stage1_templates = {
+                    "negative": getattr(model_args, 'stage1_negative_template', "The sentence of \"[X]\" doesn't mean [MASK]."),
+                    "anchor": getattr(model_args, 'stage1_anchor_template', "The sentence of \"[X]\" means [MASK]."),
+                    "positive": getattr(model_args, 'stage1_positive_template', "The sentence : \"[X]\" means [MASK]."),
+                }
                 outputs = model(
                     input_ids=batch_input['input_ids'],
                     attention_mask=batch_input['attention_mask'],
                     token_type_ids=batch_input.get('token_type_ids', None),
                     sent_emb=True,  # 使用sentemb_forward进行mask提取、两阶段处理
                     return_dict=True,
-                    stage1_template=model_args.stage1_template,
+                    stage1_templates=stage1_templates,
                     stage2_template=model_args.stage2_template,
                     tokenizer=tokenizer,
                 )
