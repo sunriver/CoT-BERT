@@ -96,7 +96,7 @@ def two_stage_cot_forward(cls,
     h = h_flat.view(batch_size, num_sent, -1)
 
     if stage2_template is None:
-        stage2_template = "so [IT_SPECIAL_TOKEN] can be summarized as [MASK]."
+        stage2_template = "so the sentence's meaning of \"[IT_SPECIAL_TOKEN]\" can be summarized as [MASK]."
 
     stage2_template_ids = tokenizer.encode(stage2_template, add_special_tokens=False)
     it_token_id = tokenizer.convert_tokens_to_ids("[IT_SPECIAL_TOKEN]")
@@ -294,7 +294,7 @@ def sentemb_forward(
     h_flat = stage1_outputs.last_hidden_state[batch_indices, mask_positions]
 
     if stage2_template is None:
-        stage2_template = "so [IT_SPECIAL_TOKEN] can be summarized as [MASK]."
+        stage2_template = "so the sentence's meaning of \"[IT_SPECIAL_TOKEN]\" can be summarized as [MASK]."
 
     stage2_template_ids = tokenizer.encode(stage2_template, add_special_tokens=False)
     it_token_id = tokenizer.convert_tokens_to_ids("[IT_SPECIAL_TOKEN]")

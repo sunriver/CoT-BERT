@@ -128,7 +128,7 @@ class ModelArguments:
         metadata={"help": "Negative template for stage 1 sentence representation"}
     )
     stage2_template: str = field(
-        default="so [IT_SPECIAL_TOKEN] can be summarized as [MASK].",
+        default="so the sentence's meaning of \"[IT_SPECIAL_TOKEN]\" can be summarized as [MASK].",
         metadata={"help": "Stage 2 template for sentence representation"}
     )
 

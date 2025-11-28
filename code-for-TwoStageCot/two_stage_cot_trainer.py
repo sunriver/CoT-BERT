@@ -86,7 +86,7 @@ class TwoStageCoTTrainer(Trainer):
             "anchor": getattr(self.model_args, 'stage1_anchor_template', "The sentence of \"[X]\" means [MASK]."),
             "positive": getattr(self.model_args, 'stage1_positive_template', "The sentence : \"[X]\" means [MASK]."),
         }
-        stage2_template = getattr(self.model_args, 'stage2_template', "so [IT_SPECIAL_TOKEN] can be summarized as [MASK].")
+        stage2_template = getattr(self.model_args, 'stage2_template', "so the sentence's meaning of \"[IT_SPECIAL_TOKEN]\" can be summarized as [MASK].")
         
         # 调用模型前向传播
         outputs = model(
@@ -175,7 +175,7 @@ class TwoStageCoTTrainer(Trainer):
                     batch_input[k] = v.unsqueeze(1)
 
             # 获取第二阶段模版
-            stage2_template = getattr(self.model_args, 'stage2_template', "so [IT_SPECIAL_TOKEN] can be summarized as [MASK].")
+            stage2_template = getattr(self.model_args, 'stage2_template', "so the sentence's meaning of \"[IT_SPECIAL_TOKEN]\" can be summarized as [MASK].")
             stage1_templates = {
                 "negative": getattr(self.model_args, 'stage1_negative_template', "The sentence of \"[X]\" doesn't mean [MASK]."),
                 "anchor": getattr(self.model_args, 'stage1_anchor_template', "The sentence of \"[X]\" means [MASK]."),
