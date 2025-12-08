@@ -82,9 +82,9 @@ class TwoStageCoTTrainer(Trainer):
             tokenizer = self.tokenizer
         
         stage1_templates = {
-            "negative": getattr(self.model_args, 'stage1_negative_template', "The sentence of \"[X]\" doesn't mean [MASK]."),
-            "anchor": getattr(self.model_args, 'stage1_anchor_template', "The sentence of \"[X]\" means [MASK]."),
-            "positive": getattr(self.model_args, 'stage1_positive_template', "The sentence : \"[X]\" means [MASK]."),
+            "negative": getattr(self.model_args, 'stage1_negative_template', "Under the meaning's type : [MASK], The sentence of \"[X]\" doesn't mean [MASK]."),
+            "anchor": getattr(self.model_args, 'stage1_anchor_template', "Under the meaning's type : [MASK], The sentence of \"[X]\" means [MASK]."),
+            "positive": getattr(self.model_args, 'stage1_positive_template', "Under the meaning's type : [MASK], The sentence : \"[X]\" means [MASK]."),
         }
         stage2_template = getattr(self.model_args, 'stage2_template', "so the sentence's meaning of \"[IT_SPECIAL_TOKEN]\" can be summarized as [MASK].")
         
@@ -136,9 +136,9 @@ class TwoStageCoTTrainer(Trainer):
 
             if use_template:
                 templates = [
-                    getattr(self.model_args, 'stage1_negative_template', "The sentence of \"[X]\" doesn't mean [MASK]."),
-                    getattr(self.model_args, 'stage1_anchor_template', "The sentence of \"[X]\" means [MASK]."),
-                    getattr(self.model_args, 'stage1_positive_template', "The sentence : \"[X]\" means [MASK]."),
+                    getattr(self.model_args, 'stage1_negative_template', "Under the meaning's type : [MASK], The sentence of \"[X]\" doesn't mean [MASK]."),
+                    getattr(self.model_args, 'stage1_anchor_template', "Under the meaning's type : [MASK], The sentence of \"[X]\" means [MASK]."),
+                    getattr(self.model_args, 'stage1_positive_template', "Under the meaning's type : [MASK], The sentence : \"[X]\" means [MASK]."),
                 ]
 
                 templated_sentences = []

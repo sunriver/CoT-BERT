@@ -107,15 +107,15 @@ class ModelArguments:
         metadata={"help": "Whether to use template with [MASK] token"}
     )
     stage1_anchor_template: str = field(
-        default="The sentence of \"[X]\" means [MASK].",
+        default="Under the meaning's type : [MASK], The sentence of \"[X]\" means [MASK].",
         metadata={"help": "Anchor template for stage 1 sentence representation"}
     )
     stage1_positive_template: str = field(
-        default="The sentence : \"[X]\" means [MASK].",
+        default="Under the meaning's type : [MASK], The sentence : \"[X]\" means [MASK].",
         metadata={"help": "Positive template for stage 1 sentence representation"}
     )
     stage1_negative_template: str = field(
-        default="The sentence of \"[X]\" doesn't mean [MASK].",
+        default="Under the meaning's type : [MASK], The sentence of \"[X]\" doesn't mean [MASK].",
         metadata={"help": "Negative template for stage 1 sentence representation"}
     )
     stage2_template: str = field(

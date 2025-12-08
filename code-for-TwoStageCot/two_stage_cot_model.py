@@ -90,9 +90,33 @@ def two_stage_cot_forward(cls,
 
     mask_token_id = cls.config.mask_token_id if hasattr(cls.config, "mask_token_id") else 103
     mask = input_ids == mask_token_id
-    mask_positions = mask.long().argmax(dim=-1)
-    batch_indices = torch.arange(input_ids.size(0), device=input_ids.device)
-    h_flat = stage1_outputs.last_hidden_state[batch_indices, mask_positions]
+    # 使用向量化方式提取所有 MASK token 的表示（参考 LMF 实现）
+    last_hidden = stage1_outputs.last_hidden_state
+    # 直接提取所有 MASK token 的表示
+    h_all_masks = last_hidden[mask]  # [total_masks, hidden_size]
+    
+    # 计算每个样本的 MASK 数量
+    mask_counts = mask.sum(dim=-1)  # [batch_size * num_sent]
+    
+    # 计算每个样本的最后一个 MASK 在 h_all_masks 中的索引
+    # 使用累积和来定位每个样本的最后一个 MASK
+    mask_cumsum = torch.cumsum(mask_counts, dim=0)  # [batch_size * num_sent]
+    # 最后一个 MASK 的索引 = 累积和 - 1（因为索引从0开始）
+    mask_indices = mask_cumsum - 1  # [batch_size * num_sent]
+    
+    # 处理没有 MASK 的情况（向后兼容）
+    has_mask = mask_counts > 0
+    if not has_mask.all():
+        # 对于没有 MASK 的样本，使用 argmax 作为后备
+        fallback_positions = mask.long().argmax(dim=-1)  # [batch_size * num_sent]
+        batch_indices_fallback = torch.arange(input_ids.size(0), device=input_ids.device)
+        h_fallback = last_hidden[batch_indices_fallback, fallback_positions]
+        # 只替换没有 MASK 的样本
+        h_flat = torch.where(has_mask.unsqueeze(-1), h_all_masks[mask_indices], h_fallback)
+    else:
+        # 所有样本都有 MASK，直接提取
+        h_flat = h_all_masks[mask_indices]  # [batch_size * num_sent, hidden_size]
+    
     h = h_flat.view(batch_size, num_sent, -1)
 
     if stage2_template is None:
@@ -289,9 +313,32 @@ def sentemb_forward(
 
     mask_token_id = cls.config.mask_token_id if hasattr(cls.config, "mask_token_id") else 103
     mask = input_ids == mask_token_id
-    mask_positions = mask.long().argmax(dim=-1)
-    batch_indices = torch.arange(input_ids.size(0), device=input_ids.device)
-    h_flat = stage1_outputs.last_hidden_state[batch_indices, mask_positions]
+    # 使用向量化方式提取所有 MASK token 的表示（参考 LMF 实现）
+    last_hidden = stage1_outputs.last_hidden_state
+    # 直接提取所有 MASK token 的表示
+    h_all_masks = last_hidden[mask]  # [total_masks, hidden_size]
+    
+    # 计算每个样本的 MASK 数量
+    mask_counts = mask.sum(dim=-1)  # [batch_size * num_sent]
+    
+    # 计算每个样本的最后一个 MASK 在 h_all_masks 中的索引
+    # 使用累积和来定位每个样本的最后一个 MASK
+    mask_cumsum = torch.cumsum(mask_counts, dim=0)  # [batch_size * num_sent]
+    # 最后一个 MASK 的索引 = 累积和 - 1（因为索引从0开始）
+    mask_indices = mask_cumsum - 1  # [batch_size * num_sent]
+    
+    # 处理没有 MASK 的情况（向后兼容）
+    has_mask = mask_counts > 0
+    if not has_mask.all():
+        # 对于没有 MASK 的样本，使用 argmax 作为后备
+        fallback_positions = mask.long().argmax(dim=-1)  # [batch_size * num_sent]
+        batch_indices_fallback = torch.arange(input_ids.size(0), device=input_ids.device)
+        h_fallback = last_hidden[batch_indices_fallback, fallback_positions]
+        # 只替换没有 MASK 的样本
+        h_flat = torch.where(has_mask.unsqueeze(-1), h_all_masks[mask_indices], h_fallback)
+    else:
+        # 所有样本都有 MASK，直接提取
+        h_flat = h_all_masks[mask_indices]  # [batch_size * num_sent, hidden_size]
 
     if stage2_template is None:
         stage2_template = "so the sentence's meaning of \"[IT_SPECIAL_TOKEN]\" can be summarized as [MASK]."

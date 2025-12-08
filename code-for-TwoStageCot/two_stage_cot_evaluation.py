@@ -116,15 +116,15 @@ class ModelArguments:
         metadata={"help": "Whether to use template with [MASK] token (not used in evaluation)"}
     )
     stage1_anchor_template: str = field(
-        default="The sentence of \"[X]\" means [MASK].",
+        default="Under the meaning's type : [MASK], The sentence of \"[X]\" means [MASK].",
         metadata={"help": "Anchor template for stage 1 sentence representation"}
     )
     stage1_positive_template: str = field(
-        default="The sentence : \"[X]\" means [MASK].",
+        default="Under the meaning's type : [MASK], The sentence : \"[X]\" means [MASK].",
         metadata={"help": "Positive template for stage 1 sentence representation"}
     )
     stage1_negative_template: str = field(
-        default="The sentence of \"[X]\" doesn't mean [MASK].",
+        default="Under the meaning's type : [MASK], The sentence of \"[X]\" doesn't mean [MASK].",
         metadata={"help": "Negative template for stage 1 sentence representation"}
     )
     stage2_template: str = field(
@@ -452,9 +452,9 @@ def main():
 
             if use_template:
                 templates = [
-                    getattr(model_args, 'stage1_negative_template', "The sentence of \"[X]\" doesn't mean [MASK]."),
-                    getattr(model_args, 'stage1_anchor_template', "The sentence of \"[X]\" means [MASK]."),
-                    getattr(model_args, 'stage1_positive_template', "The sentence : \"[X]\" means [MASK]."),
+                    getattr(model_args, 'stage1_negative_template', "Under the meaning's type : [MASK], The sentence of \"[X]\" doesn't mean [MASK]."),
+                    getattr(model_args, 'stage1_anchor_template', "Under the meaning's type : [MASK], The sentence of \"[X]\" means [MASK]."),
+                    getattr(model_args, 'stage1_positive_template', "Under the meaning's type : [MASK], The sentence : \"[X]\" means [MASK]."),
                 ]
 
                 templated_sentences = []
@@ -494,9 +494,9 @@ def main():
             # sentemb_forward会提取mask位置，进行两阶段处理等流程
             with torch.no_grad():
                 stage1_templates = {
-                    "negative": getattr(model_args, 'stage1_negative_template', "The sentence of \"[X]\" doesn't mean [MASK]."),
-                    "anchor": getattr(model_args, 'stage1_anchor_template', "The sentence of \"[X]\" means [MASK]."),
-                    "positive": getattr(model_args, 'stage1_positive_template', "The sentence : \"[X]\" means [MASK]."),
+                    "negative": getattr(model_args, 'stage1_negative_template', "Under the meaning's type : [MASK], The sentence of \"[X]\" doesn't mean [MASK]."),
+                    "anchor": getattr(model_args, 'stage1_anchor_template', "Under the meaning's type : [MASK], The sentence of \"[X]\" means [MASK]."),
+                    "positive": getattr(model_args, 'stage1_positive_template', "Under the meaning's type : [MASK], The sentence : \"[X]\" means [MASK]."),
                 }
                 outputs = model(
                     input_ids=batch_input['input_ids'],
