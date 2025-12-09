@@ -49,6 +49,30 @@ class StageFusion(nn.Module):
         return h_fused
 
 
+class StageAdapter(nn.Module):
+    """
+    阶段适配器：将第一阶段的句子表示投影适配到第二阶段的token embedding空间
+    使用 Linear + Tanh 激活函数（参考SPR模型）
+    """
+    def __init__(self, hidden_dim: int):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.dense = nn.Linear(hidden_dim, hidden_dim)
+        self.activation = nn.Tanh()
+    
+    def forward(self, h):
+        """
+        对第一阶段表示进行投影适配
+        Args:
+            h: (batch_size * num_sent, hidden_dim) 或 (batch_size, num_sent, hidden_dim) 第一阶段表示
+        Returns:
+            h_adapted: 投影适配后的表示，形状与输入相同
+        """
+        x = self.dense(h)
+        x = self.activation(x)
+        return x
+
+
 def two_stage_cot_init(cls, config, temperature=0.05):
     """
     两阶段思维链模型初始化函数
@@ -64,6 +88,9 @@ def two_stage_cot_init(cls, config, temperature=0.05):
         hidden_dim=config.hidden_size,
         stage1_weight=0.7  # 初始时第一阶段权重较大，保留第一阶段语义
     )
+    
+    # 初始化阶段适配器：将第一阶段表示适配到第二阶段token embedding空间
+    cls.stage_adapter = StageAdapter(hidden_dim=config.hidden_size)
     
     # 存储温度参数
     cls.temperature = temperature
@@ -195,9 +222,12 @@ def two_stage_cot_forward(cls,
             device=stage2_embeddings.device,
         )
         token_type_embeddings = encoder.embeddings.token_type_embeddings(token_type_zero)
-
+        
+        # 使用适配器对第一阶段表示进行投影适配
+        h_flat_adapted = cls.stage_adapter(h_flat)  # (batch_size * num_sent, hidden_dim)
+        
         replacement = (
-            h_flat
+            h_flat_adapted
             + position_embeddings[0, it_pos_in_sequence, :].unsqueeze(0)
             + token_type_embeddings[0, it_pos_in_sequence, :].unsqueeze(0)
         )
@@ -418,8 +448,12 @@ def sentemb_forward(
             device=stage2_embeddings.device,
         )
         token_type_embeddings = encoder.embeddings.token_type_embeddings(token_type_zero)
+        
+        # 使用适配器对第一阶段表示进行投影适配
+        h_flat_adapted = cls.stage_adapter(h_flat)  # (batch_size * num_sent, hidden_dim)
+        
         replacement = (
-            h_flat
+            h_flat_adapted
             + position_embeddings[0, it_pos_in_sequence, :].unsqueeze(0)
             + token_type_embeddings[0, it_pos_in_sequence, :].unsqueeze(0)
         )
