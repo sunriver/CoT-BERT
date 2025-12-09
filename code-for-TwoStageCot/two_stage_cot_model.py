@@ -21,6 +21,34 @@ class Similarity(nn.Module):
         return self.cos(x, y) / self.temp
 
 
+class StageFusion(nn.Module):
+    """
+    两阶段表示融合层：融合第一阶段的h和第二阶段的h_plus
+    使用加权融合方式：h_fused = w1 * h + w2 * h_plus
+    初始时w1较大（0.7）以保留第一阶段语义
+    """
+    def __init__(self, hidden_dim: int, stage1_weight: float = 0.7):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        # 可学习的权重参数
+        self.stage1_weight = nn.Parameter(torch.tensor(stage1_weight))
+        self.stage2_weight = nn.Parameter(torch.tensor(1.0 - stage1_weight))
+    
+    def forward(self, h, h_plus):
+        """
+        融合两个阶段的表示
+        Args:
+            h: (batch_size, num_sent, hidden_dim) 第一阶段表示
+            h_plus: (batch_size, num_sent, hidden_dim) 第二阶段表示
+        Returns:
+            h_fused: (batch_size, num_sent, hidden_dim) 融合后的表示
+        """
+        # 使用softmax确保权重和为1，但保持相对比例
+        weights = F.softmax(torch.stack([self.stage1_weight, self.stage2_weight]), dim=0)
+        h_fused = weights[0] * h + weights[1] * h_plus
+        return h_fused
+
+
 def two_stage_cot_init(cls, config, temperature=0.05):
     """
     两阶段思维链模型初始化函数
@@ -30,6 +58,12 @@ def two_stage_cot_init(cls, config, temperature=0.05):
     """
     # 初始化相似度计算模块（用于InfoNCE损失）
     cls.similarity = Similarity(temp=temperature)
+    
+    # 初始化两阶段融合层
+    cls.stage_fusion = StageFusion(
+        hidden_dim=config.hidden_size,
+        stage1_weight=0.7  # 初始时第一阶段权重较大，保留第一阶段语义
+    )
     
     # 存储温度参数
     cls.temperature = temperature
@@ -187,33 +221,36 @@ def two_stage_cot_forward(cls,
     h_plus_flat = stage2_outputs.last_hidden_state[batch_indices_stage2, mask_positions_stage2]
     h_plus = h_plus_flat.view(batch_size, num_sent, -1)
 
+    # 融合两个阶段的表示，保留第一阶段语义
+    h_fused = cls.stage_fusion(h, h_plus)  # (batch_size, num_sent, hidden_dim)
+
     eps = 1e-8
     loss = None
     logits = None
     loss_fct = nn.CrossEntropyLoss()
 
     if num_sent >= 3:
-        # 提取三个模版的第二阶段表示
-        neg_vec = h_plus[:, 0, :]  # 负例模版的 h_plus
-        anchor_vec = h_plus[:, 1, :]  # 锚句模版的 h_plus
-        pos_vec = h_plus[:, 2, :]  # 正例模版的 h_plus
+        # 提取三个模版的融合表示
+        neg_vec = h_fused[:, 0, :]  # 负例模版的 h_fused
+        anchor_vec = h_fused[:, 1, :]  # 锚句模版的 h_fused
+        pos_vec = h_fused[:, 2, :]  # 正例模版的 h_fused
 
         # 归一化
         neg_norm = F.normalize(neg_vec, p=2, dim=-1, eps=eps)
         anchor_norm = F.normalize(anchor_vec, p=2, dim=-1, eps=eps)
         pos_norm = F.normalize(pos_vec, p=2, dim=-1, eps=eps)
 
-        # 正样本对：锚句与正例的第二阶段表示
+        # 正样本对：锚句与正例的融合表示
         pos_sim = (anchor_norm * pos_norm).sum(dim=-1, keepdim=True) / cls.temperature
         pos_sim = torch.clamp(pos_sim, min=-50.0, max=50.0)
 
         # 构建负样本候选池：
-        # 包含所有batch的所有h_plus（neg、anchor、pos），然后排除当前batch的anchor和pos
-        h_plus_flat = h_plus.view(-1, h_plus.size(-1))  # (batch_size * 3, hidden_dim)
-        h_plus_flat_norm = F.normalize(h_plus_flat, p=2, dim=-1, eps=eps)
+        # 包含所有batch的所有h_fused（neg、anchor、pos），然后排除当前batch的anchor和pos
+        h_fused_flat = h_fused.view(-1, h_fused.size(-1))  # (batch_size * 3, hidden_dim)
+        h_fused_flat_norm = F.normalize(h_fused_flat, p=2, dim=-1, eps=eps)
         
-        # 负样本候选池：所有batch的所有h_plus（包括neg、anchor、pos）
-        candidate_bank = h_plus_flat_norm  # (batch_size * 3, hidden_dim)
+        # 负样本候选池：所有batch的所有h_fused（包括neg、anchor、pos）
+        candidate_bank = h_fused_flat_norm  # (batch_size * 3, hidden_dim)
         
         # 计算锚句与所有候选的相似度
         neg_sim = torch.mm(anchor_norm, candidate_bank.t()) / cls.temperature
@@ -221,7 +258,7 @@ def two_stage_cot_forward(cls,
 
         # 排除自身：当前batch的anchor和pos不应该作为负样本
         batch_range = torch.arange(batch_size, device=anchor_norm.device)
-        # 排除当前batch的anchor (索引: batch_size + batch_range，因为h_plus顺序是[neg, anchor, pos])
+        # 排除当前batch的anchor (索引: batch_size + batch_range，因为h_fused顺序是[neg, anchor, pos])
         neg_sim[:, batch_size + batch_range] = float("-inf")
         # 排除当前batch的pos (索引: 2 * batch_size + batch_range)
         neg_sim[:, 2 * batch_size + batch_range] = float("-inf")
@@ -233,15 +270,15 @@ def two_stage_cot_forward(cls,
         logits = anchor_vec
     else:
         h_single = h.squeeze(1)
-        h_plus_single = h_plus.squeeze(1)
+        h_fused_single = h_fused.squeeze(1)
 
         h_norm = F.normalize(h_single, p=2, dim=-1, eps=eps)
-        h_plus_norm = F.normalize(h_plus_single, p=2, dim=-1, eps=eps)
+        h_fused_norm = F.normalize(h_fused_single, p=2, dim=-1, eps=eps)
 
-        pos_sim = (h_norm * h_plus_norm).sum(dim=-1, keepdim=True) / cls.temperature
+        pos_sim = (h_norm * h_fused_norm).sum(dim=-1, keepdim=True) / cls.temperature
         pos_sim = torch.clamp(pos_sim, min=-50.0, max=50.0)
 
-        neg_sim = torch.mm(h_plus_norm, h_plus_norm.t()) / cls.temperature
+        neg_sim = torch.mm(h_fused_norm, h_fused_norm.t()) / cls.temperature
         eye_mask = torch.eye(batch_size, device=h_norm.device, dtype=torch.bool)
         neg_sim = neg_sim.masked_fill(eye_mask, float("-inf"))
         neg_sim = torch.clamp(neg_sim, min=-50.0, max=50.0)
@@ -250,7 +287,7 @@ def two_stage_cot_forward(cls,
         cos_sim = torch.cat([pos_sim, neg_sim], dim=1)
         labels_infonce = torch.zeros(batch_size, dtype=torch.long, device=h_norm.device)
         loss = loss_fct(cos_sim, labels_infonce)
-        logits = h_plus_single
+        logits = h_fused_single
 
     if not return_dict:
         output = (logits,) + stage2_outputs[2:]
@@ -404,13 +441,19 @@ def sentemb_forward(
         mask_stage2 = stage2_input_ids == mask_token_id
         mask_positions_stage2 = mask_stage2.long().argmax(dim=-1)
         batch_indices_stage2 = torch.arange(stage2_input_ids.size(0), device=stage2_input_ids.device)
-        pooler_flat = stage2_outputs.last_hidden_state[batch_indices_stage2, mask_positions_stage2]
-        pooler_all = pooler_flat.view(batch_size, num_sent, -1)
+        h_plus_flat = stage2_outputs.last_hidden_state[batch_indices_stage2, mask_positions_stage2]
+        h_plus_all = h_plus_flat.view(batch_size, num_sent, -1)
+
+        # 将h reshape为(batch_size, num_sent, hidden_dim)以便融合
+        h_all = h_flat.view(batch_size, num_sent, -1)
+        
+        # 融合两个阶段的表示，保留第一阶段语义
+        h_fused_all = cls.stage_fusion(h_all, h_plus_all)  # (batch_size, num_sent, hidden_dim)
 
         if num_sent >= 3:
-            pooler_output = pooler_all[:, 1, :]
+            pooler_output = h_fused_all[:, 1, :]
         else:
-            pooler_output = pooler_all.squeeze(1)
+            pooler_output = h_fused_all.squeeze(1)
 
         eps = 1e-8
         pooler_output = F.normalize(pooler_output, p=2, dim=-1, eps=eps)
