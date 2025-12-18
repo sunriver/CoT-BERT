@@ -402,6 +402,10 @@ def cross_template_cot_forward(cls,
     labels_infonce_1 = torch.zeros(batch_size, dtype=torch.long, device=h1_anchor_norm.device)
     L1 = loss_fct(cos_sim_1, labels_infonce_1)
     
+    # 检查并处理 NaN 和 Inf
+    if torch.isnan(L1) or torch.isinf(L1):
+        L1 = torch.tensor(0.0, device=L1.device, requires_grad=True)
+    
     # L2: 过程监督InfoNCE Loss 2（第二个MASK位置）
     h2_anchor_norm = F.normalize(h2_anchor, p=2, dim=-1, eps=eps)
     h2_positive_norm = F.normalize(h2_positive, p=2, dim=-1, eps=eps)
@@ -421,6 +425,10 @@ def cross_template_cot_forward(cls,
     labels_infonce_2 = torch.zeros(batch_size, dtype=torch.long, device=h2_anchor_norm.device)
     L2 = loss_fct(cos_sim_2, labels_infonce_2)
     
+    # 检查并处理 NaN 和 Inf
+    if torch.isnan(L2) or torch.isinf(L2):
+        L2 = torch.tensor(0.0, device=L2.device, requires_grad=True)
+    
     # L3: 约束项损失
     # L3 = (||(h2_positive-h1_anchor)|| + ||(h2_anchor-h1_positive)||) / (||h2_anchor|| + ||h2_positive||² + ε)
     h2_positive_minus_h1_anchor = h2_positive - h1_anchor  # [batch_size, hidden_size]
@@ -429,7 +437,14 @@ def cross_template_cot_forward(cls,
     numerator = torch.norm(h2_positive_minus_h1_anchor, p=2, dim=-1) + torch.norm(h2_anchor_minus_h1_positive, p=2, dim=-1)  # [batch_size]
     denominator = torch.norm(h2_anchor, p=2, dim=-1) + torch.norm(h2_positive, p=2, dim=-1) ** 2 + eps  # [batch_size]
     
+    # 确保分母不会太小，避免数值不稳定
+    denominator = torch.clamp(denominator, min=eps * 10)  # 至少为 eps * 10
+    
     L3 = (numerator / denominator).mean()
+    
+    # 检查并处理 NaN 和 Inf
+    if torch.isnan(L3) or torch.isinf(L3):
+        L3 = torch.tensor(0.0, device=L3.device, requires_grad=True)
     
     # 总损失：L1 + L2 + L3（等权重）
     weight_1 = getattr(cls.model_args, 'process_supervision_weight_1', 1.0)
