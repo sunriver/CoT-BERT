@@ -1,0 +1,584 @@
+import sys
+sys.path.append("..")
+
+import os
+import torch
+import logging
+import transformers
+from datasets import load_dataset
+from dataclasses import dataclass, field
+from typing import Optional, Union, List, Dict
+
+from transformers import (
+    set_seed,
+    AutoConfig,
+    AutoTokenizer,
+    HfArgumentParser,
+    TrainingArguments,
+    default_data_collator,
+    MODEL_FOR_MASKED_LM_MAPPING,
+)
+
+from cross_template_cot_trainer import CrossTemplateCoTTrainer
+from cross_template_cot_model import BertForCrossTemplateCoT
+from transformers.trainer_utils import is_main_process
+from transformers.tokenization_utils_base import PaddingStrategy, PreTrainedTokenizerBase
+from transformers.utils import cached_property, is_torch_tpu_available
+
+from lmf_log_util import getMyLogger
+
+# 跨平台设备配置
+from platform_utils import (
+    detect_platform,
+    setup_device_config,
+    get_platform_config_file,
+    setup_cuda_environment,
+    print_platform_info,
+)
+
+# 打印平台信息
+print_platform_info()
+
+# 设置CUDA环境（如果需要）
+setup_cuda_environment()
+
+# 获取平台配置
+platform_config = setup_device_config()
+
+
+logger = getMyLogger(__name__)
+MODEL_CONFIG_CLASSES = list(MODEL_FOR_MASKED_LM_MAPPING.keys())
+MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
+
+
+@dataclass
+class ModelArguments:
+    """
+    模型及模板相关参数
+    """
+
+    # Huggingface 原始参数
+    model_name_or_path: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "The model checkpoint for weights initialization. "
+            "Don't set if you want to train a model from scratch."
+        },
+    )
+    model_type: Optional[str] = field(
+        default=None,
+        metadata={"help": "If training from scratch, pass a model type from the list: " + ", ".join(MODEL_TYPES)},
+    )
+    config_name: Optional[str] = field(
+        default=None,
+        metadata={"help": "Pretrained config name or path if not the same as model_name"},
+    )
+    tokenizer_name: Optional[str] = field(
+        default=None,
+        metadata={"help": "Pretrained tokenizer name or path if not the same as model_name"},
+    )
+    cache_dir: Optional[str] = field(
+        default=None,
+        metadata={"help": "Where do you want to store the pretrained models downloaded from huggingface.co"},
+    )
+    use_fast_tokenizer: bool = field(
+        default=True,
+        metadata={"help": "Whether to use one of the fast tokenizer (backed by the tokenizers library) or not."},
+    )
+    model_revision: str = field(
+        default="main",
+        metadata={"help": "The specific model version to use (can be a branch name, tag name or commit id)."},
+    )
+    use_auth_token: bool = field(
+        default=False,
+        metadata={
+            "help": "Will use the token generated when running `transformers-cli login` "
+            "(necessary to use this script with private models)."
+        },
+    )
+
+    # CrossTemplateCoT 特定参数
+    temperature: float = field(
+        default=0.05,
+        metadata={"help": "Temperature parameter for InfoNCE loss (default: 0.05)"},
+    )
+    temp: float = field(
+        default=0.05,
+        metadata={"help": "Alias of temperature (for compatibility with CoT-BERT configs)"},
+    )
+
+    # 模板与去噪相关参数
+    mask_embedding_sentence: bool = field(
+        default=True,
+        metadata={"help": "Whether to use template with [MASK] token"},
+    )
+    mask_num: int = field(
+        default=2,
+        metadata={"help": "Number of [MASK] tokens in templates (default: 2)"},
+    )
+    mask_embedding_sentence_template: str = field(
+        default='The sentence of "[X]" means [MASK], so it can be summarized as [MASK].',
+        metadata={"help": "Anchor template"},
+    )
+    mask_embedding_sentence_different_template: str = field(
+        default='The sentence ："[X]" means [MASK], so it can be summarized as [MASK].',
+        metadata={"help": "Positive template"},
+    )
+    mask_embedding_sentence_negative_template: str = field(
+        default='The sentence ："[X]" does not mean [MASK], so it cannot be summarized as [MASK]',
+        metadata={"help": "Negative template"},
+    )
+
+    # 去噪和MLP设置
+    mask_embedding_sentence_delta: bool = field(
+        default=True,
+        metadata={"help": "Whether to use delta denoising for [MASK] representations"},
+    )
+    mask_embedding_sentence_delta_freeze: bool = field(
+        default=False,
+        metadata={"help": "Whether to freeze delta denoising parameters"},
+    )
+    mask_embedding_sentence_org_mlp: bool = field(
+        default=False,
+        metadata={"help": "Whether to use original MLP layer before denoising"},
+    )
+
+    # 损失权重
+    process_supervision_weight_1: float = field(
+        default=1.0,
+        metadata={"help": "Weight for process supervision InfoNCE loss 1 (first MASK)"},
+    )
+    process_supervision_weight_2: float = field(
+        default=1.0,
+        metadata={"help": "Weight for process supervision InfoNCE loss 2 (second MASK)"},
+    )
+    constraint_weight: float = field(
+        default=1.0,
+        metadata={"help": "Weight for constraint loss L3"},
+    )
+
+
+@dataclass
+class DataTrainingArguments:
+    """
+    数据相关参数
+    """
+
+    dataset_name: Optional[str] = field(
+        default=None,
+        metadata={"help": "The name of the dataset to use (via the datasets library)."},
+    )
+    dataset_config_name: Optional[str] = field(
+        default=None,
+        metadata={"help": "The configuration name of the dataset to use (via the datasets library)."},
+    )
+    overwrite_cache: bool = field(
+        default=False,
+        metadata={"help": "Overwrite the cached training and evaluation sets"},
+    )
+    validation_split_percentage: Optional[int] = field(
+        default=5,
+        metadata={"help": "The percentage of the train set used as validation set in case there's no validation split"},
+    )
+    preprocessing_num_workers: Optional[int] = field(
+        default=None,
+        metadata={"help": "The number of processes to use for the preprocessing."},
+    )
+
+    train_file: Optional[str] = field(
+        default=None,
+        metadata={"help": "The training data file (.txt or .csv)."},
+    )
+    validation_file: Optional[str] = field(
+        default=None,
+        metadata={"help": "The validation data file (.txt or .csv)."},
+    )
+    max_seq_length: Optional[int] = field(
+        default=32,
+        metadata={
+            "help": "The maximum total input sequence length after tokenization. "
+            "Sequences longer than this will be truncated."
+        },
+    )
+    pad_to_max_length: bool = field(
+        default=False,
+        metadata={
+            "help": "Whether to pad all samples to `max_seq_length`. "
+            "If False, will pad the samples dynamically when batching to the maximum length in the batch."
+        },
+    )
+    mlm_probability: float = field(
+        default=0.15,
+        metadata={"help": "Ratio of tokens to mask for MLM (only effective if --do_mlm)"},
+    )
+
+    def __post_init__(self):
+        if self.dataset_name is None and self.train_file is None and self.validation_file is None:
+            raise ValueError("Need either a dataset name or a training/validation file.")
+        if self.train_file is not None:
+            extension = self.train_file.split(".")[-1]
+            assert extension in ["csv", "json", "txt"], "`train_file` should be a csv, a json or a txt file."
+
+
+@dataclass
+class OurTrainingArguments(TrainingArguments):
+    # 是否在validation阶段评估transfer任务
+    eval_transfer: bool = field(
+        default=False,
+        metadata={"help": "Evaluate transfer task dev sets (in validation)."},
+    )
+
+    # 修复 transformers==4.2.1 中 ddp_find_unused_parameters 类型问题
+    ddp_find_unused_parameters: bool = field(
+        default=None,
+        metadata={
+            "help": "When using distributed training, the value of the flag `find_unused_parameters` "
+            "passed to `DistributedDataParallel`."
+        },
+    )
+    disable_tqdm: bool = field(
+        default=None,
+        metadata={"help": "Whether or not to disable the tqdm progress bars."},
+    )
+    remove_unused_columns: bool = field(
+        default=True,
+        metadata={"help": "Remove columns not required by the model when using an nlp.Dataset."},
+    )
+    greater_is_better: bool = field(
+        default=True,
+        metadata={"help": "Whether the `metric_for_best_model` should be maximized or not."},
+    )
+    load_best_model_at_end: bool = field(
+        default=False,
+        metadata={"help": "Whether or not to load the best model found during training at the end of training."},
+    )
+
+    @cached_property
+    def _setup_devices(self) -> "torch.device":  # type: ignore[name-defined]
+        logger.info("PyTorch: setting up devices")
+        if self.no_cuda:
+            device = torch.device("cpu")
+            self._n_gpu = 0
+        elif is_torch_tpu_available():
+            device = xm.xla_device()  # type: ignore[name-defined]
+            self._n_gpu = 0
+        elif self.local_rank == -1:
+            if torch.backends.mps.is_available():
+                device = torch.device("mps")
+                self._n_gpu = 1
+            elif torch.cuda.is_available():
+                device = torch.device("cuda:0")
+                self._n_gpu = torch.cuda.device_count()
+            else:
+                device = torch.device("cpu")
+                self._n_gpu = 0
+        else:
+            if self.deepspeed:
+                from transformers.integrations import is_deepspeed_available
+
+                if not is_deepspeed_available():
+                    raise ImportError("--deepspeed requires deepspeed: `pip install deepspeed`.")
+                import deepspeed
+
+                deepspeed.init_distributed()
+            else:
+                torch.distributed.init_process_group(backend="nccl")
+            device = torch.device("cuda", self.local_rank)
+            self._n_gpu = 1
+
+        if device.type == "cuda":
+            torch.cuda.set_device(device)
+
+        return device
+
+
+from parse_args_util import load_configs
+
+
+def prepare_features(examples, model_args: ModelArguments, data_args: DataTrainingArguments, tokenizer):
+    """
+    Cross-Template CoT 模板数据准备函数
+    使用3个模板（锚句、正样本、负样本）为每个句子生成输入。
+    """
+    total = len(examples["text"])
+
+    # 避免 None
+    for idx in range(total):
+        if examples["text"][idx] is None:
+            examples["text"][idx] = " "
+
+    sentences = examples["text"]
+
+    if model_args.mask_embedding_sentence:
+        templates = [
+            model_args.mask_embedding_sentence_template,
+            model_args.mask_embedding_sentence_different_template,
+            model_args.mask_embedding_sentence_negative_template,
+        ]  # 顺序: anchor, positive, negative
+
+        prefixes = []
+        suffixes = []
+        for template in templates:
+            parts = template.split("[X]")
+            prefix = parts[0]
+            suffix = parts[1] if len(parts) > 1 else ""
+            prefixes.append(tokenizer.encode(prefix, add_special_tokens=False))
+            suffixes.append(tokenizer.encode(suffix, add_special_tokens=False))
+
+        all_sequences: List[List[List[int]]] = [[] for _ in range(len(templates))]
+
+        for sent in sentences:
+            sent_ids = tokenizer.encode(sent, add_special_tokens=False)[: data_args.max_seq_length]
+            for view_idx, _ in enumerate(templates):
+                seq = (
+                    [tokenizer.cls_token_id]
+                    + prefixes[view_idx]
+                    + sent_ids
+                    + suffixes[view_idx]
+                    + [tokenizer.sep_token_id]
+                )
+                all_sequences[view_idx].append(seq)
+
+        max_length = max(len(seq) for view in all_sequences for seq in view)
+
+        sent_features: Dict[str, List] = {"input_ids": [], "attention_mask": []}
+        for sample_idx in range(total):
+            sample_views_ids = []
+            sample_views_mask = []
+            for view_idx in range(len(templates)):
+                seq = all_sequences[view_idx][sample_idx]
+                pad_len = max_length - len(seq)
+                sample_views_ids.append(seq + [tokenizer.pad_token_id] * pad_len)
+                sample_views_mask.append([1] * len(seq) + [0] * pad_len)
+            sent_features["input_ids"].append(sample_views_ids)
+            sent_features["attention_mask"].append(sample_views_mask)
+    else:
+        sent_features = {"input_ids": [], "attention_mask": []}
+        for sent in sentences:
+            sent_ids = tokenizer.encode(sent, add_special_tokens=False)[: data_args.max_seq_length]
+            seq = [tokenizer.cls_token_id] + sent_ids + [tokenizer.sep_token_id]
+            # anchor / positive / negative 共用同一句（无模板）
+            sent_features["input_ids"].append([seq, seq, seq])
+
+        max_length = max(len(seq) for sample in sent_features["input_ids"] for seq in sample)
+        padded_ids = []
+        padded_mask = []
+        for sample in sent_features["input_ids"]:
+            sample_ids = []
+            sample_mask = []
+            for seq in sample:
+                pad_len = max_length - len(seq)
+                sample_ids.append(seq + [tokenizer.pad_token_id] * pad_len)
+                sample_mask.append([1] * len(seq) + [0] * pad_len)
+            padded_ids.append(sample_ids)
+            padded_mask.append(sample_mask)
+        sent_features["input_ids"] = padded_ids
+        sent_features["attention_mask"] = padded_mask
+
+    features: Dict[str, List] = {}
+    for key in sent_features:
+        features[key] = [sent_features[key][i] for i in range(total)]
+
+    return features
+
+
+def main():
+    # 获取平台特定配置文件
+    config_file = get_platform_config_file()
+    print(f"使用配置文件: {config_file}")
+
+    parser = HfArgumentParser((ModelArguments, DataTrainingArguments, OurTrainingArguments))
+
+    config_custom_file = sys.argv[1] if len(sys.argv) > 1 else ""
+    args_list = load_configs(default_file=config_file, custom_file=config_custom_file)
+
+    # 根据平台自动设置设备相关参数
+    platform_type = detect_platform()
+    if platform_type == "mac_m4":
+        # Mac M4: 使用MPS，禁用CUDA
+        args_list.extend(["--no_cuda", "true"])
+    elif platform_type == "linux_cuda":
+        # Linux CUDA: 使用CUDA
+        args_list.extend(["--no_cuda", "false"])
+    else:
+        # 其他平台: 使用CPU
+        args_list.extend(["--no_cuda", "true"])
+
+    model_args, data_args, training_args = parser.parse_args_into_dataclasses(args=args_list)
+
+    if (
+        os.path.exists(training_args.output_dir)
+        and os.listdir(training_args.output_dir)
+        and training_args.do_train
+        and not training_args.overwrite_output_dir
+    ):
+        raise ValueError(
+            f"Output directory ({training_args.output_dir}) already exists and is not empty."
+            "Use --overwrite_output_dir to overcome."
+        )
+
+    # 日志
+    logger.warning(
+        (
+            f"Process rank: {training_args.local_rank}, device: {training_args.device}, n_gpu: {training_args.n_gpu}"
+            + f" distributed training: {training_args.local_rank != -1}, 16-bits training: {training_args.fp16}"
+        )
+    )
+
+    if is_main_process(training_args.local_rank):
+        transformers.utils.logging.set_verbosity_info()
+        transformers.utils.logging.enable_default_handler()
+        transformers.utils.logging.enable_explicit_format()
+
+    logger.info("Training/evaluation parameters %s", training_args)
+
+    # 设置随机种子
+    set_seed(training_args.seed)
+
+    # 加载数据集
+    data_files = {}
+    if data_args.train_file is not None:
+        data_files["train"] = data_args.train_file
+
+    extension = data_args.train_file.split(".")[-1]
+    if extension == "txt":
+        extension = "text"
+    if extension == "csv":
+        datasets = load_dataset(
+            extension,
+            data_files=data_files,
+            cache_dir="../data/",
+            delimiter="\t" if "tsv" in data_args.train_file else ",",
+        )
+    else:
+        datasets = load_dataset(extension, data_files=data_files, cache_dir="../data/")
+
+    # 加载预训练模型与tokenizer
+    config_kwargs = {
+        "cache_dir": model_args.cache_dir,
+        "revision": model_args.model_revision,
+        "use_auth_token": True if model_args.use_auth_token else None,
+    }
+
+    config = AutoConfig.from_pretrained(model_args.model_name_or_path, **config_kwargs)
+
+    tokenizer_kwargs = {
+        "cache_dir": model_args.cache_dir,
+        "use_fast": model_args.use_fast_tokenizer,
+        "revision": model_args.model_revision,
+        "use_auth_token": True if model_args.use_auth_token else None,
+    }
+
+    tokenizer = AutoTokenizer.from_pretrained(model_args.model_name_or_path, **tokenizer_kwargs)
+
+    if model_args.model_name_or_path:
+        if "bert" in model_args.model_name_or_path.lower():
+            model = BertForCrossTemplateCoT.from_pretrained(
+                model_args.model_name_or_path,
+                from_tf=".ckpt" in model_args.model_name_or_path,
+                config=config,
+                cache_dir=model_args.cache_dir,
+                revision=model_args.model_revision,
+                use_auth_token=True if model_args.use_auth_token else None,
+                model_args=model_args,
+            )
+        else:
+            raise NotImplementedError("Only BERT models are supported for CrossTemplateCoT")
+    else:
+        raise NotImplementedError
+
+    # 准备特征
+    column_names = datasets["train"].column_names
+
+    if training_args.do_train:
+        train_dataset = datasets["train"].map(
+            lambda examples: prepare_features(examples, model_args, data_args, tokenizer),
+            batched=True,
+            num_proc=data_args.preprocessing_num_workers,
+            remove_columns=column_names,
+            load_from_cache_file=not data_args.overwrite_cache,
+        )
+
+    @dataclass
+    class OurDataCollatorWithPadding:
+        tokenizer: PreTrainedTokenizerBase
+        padding: Union[bool, str, PaddingStrategy] = True
+        max_length: Optional[int] = None
+        pad_to_multiple_of: Optional[int] = None
+        mlm: bool = True
+        mlm_probability: float = data_args.mlm_probability
+
+        def __call__(self, features: List[Dict[str, Union[List[int], List[List[int]], torch.Tensor]]]) -> Dict[str, torch.Tensor]:
+            special_keys = ["input_ids", "attention_mask", "token_type_ids"]
+            bs = len(features)
+
+            if bs > 0:
+                num_sent = len(features[0]["input_ids"])
+            else:
+                return {}
+
+            flat_features = []
+            for feature in features:
+                for i in range(num_sent):
+                    flat_features.append({k: feature[k][i] if k in special_keys else feature[k] for k in feature})
+
+            batch = self.tokenizer.pad(
+                flat_features,
+                padding=self.padding,
+                max_length=self.max_length,
+                pad_to_multiple_of=self.pad_to_multiple_of,
+                return_tensors="pt",
+            )
+
+            batch = {
+                k: batch[k].view(bs, num_sent, -1) if k in special_keys else batch[k].view(bs, num_sent, -1)[:, 0]
+                for k in batch
+            }
+
+            if "label" in batch:
+                batch["labels"] = batch["label"]
+                del batch["label"]
+            if "label_ids" in batch:
+                batch["labels"] = batch["label_ids"]
+                del batch["label_ids"]
+
+            return batch
+
+    data_collator = default_data_collator if data_args.pad_to_max_length else OurDataCollatorWithPadding(tokenizer)
+
+    # 设置模型属性
+    model.pad_token_id = tokenizer.pad_token_id
+    model.tokenizer = tokenizer
+
+    trainer = CrossTemplateCoTTrainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset if training_args.do_train else None,
+        tokenizer=tokenizer,
+        data_collator=data_collator,
+    )
+
+    trainer.model_args = model_args
+
+    # 训练
+    if training_args.do_train:
+        model_path = None
+        train_result = trainer.train(model_path=model_path)
+        trainer.save_model()
+
+        output_train_file = os.path.join(training_args.output_dir, "train_results.txt")
+
+        if trainer.is_world_process_zero():
+            with open(output_train_file, "w") as writer:
+                logger.info("***** CrossTemplateCoT Train results *****")
+                for key, value in sorted(train_result.metrics.items()):
+                    logger.info(f"  {key} = {value}")
+                    writer.write(f"{key} = {value}\n")
+
+            trainer.state.save_to_json(os.path.join(training_args.output_dir, "trainer_state.json"))
+
+
+if __name__ == "__main__":
+    main()
+
+

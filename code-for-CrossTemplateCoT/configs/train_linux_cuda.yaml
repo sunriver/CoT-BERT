@@ -1,0 +1,49 @@
+model_name_or_path: "/path/to/bert-base-uncased"
+train_file: "../data/wiki1m_for_simcse.txt"
+output_dir: "../result/CrossTemplateCoT-BERT-linux_cuda"
+num_train_epochs: 1
+per_device_train_batch_size: 128
+gradient_accumulation_steps: 1
+learning_rate: 1e-5
+max_seq_length: 32
+evaluation_strategy: steps
+metric_for_best_model: eval_stsb_spearman
+load_best_model_at_end: true
+eval_steps: 100
+
+save_strategy: steps
+save_steps: 100
+save_total_limit: 1
+
+logging_steps: 100
+
+overwrite_output_dir: true
+do_train: true
+fp16: false
+preprocessing_num_workers: 10
+use_mps_device: false
+dataloader_drop_last: true
+seed: 0
+
+# CrossTemplateCoT specific arguments
+temperature: 0.05
+temp: 0.05
+
+# Template configuration
+mask_embedding_sentence: true
+mask_num: 2
+mask_embedding_sentence_template: 'The sentence of "[X]" means [MASK], so it can be summarized as [MASK].'
+mask_embedding_sentence_different_template: 'The sentence ："[X]" means [MASK], so it can be summarized as [MASK].'
+mask_embedding_sentence_negative_template: 'The sentence ："[X]" does not mean [MASK], so it cannot be summarized as [MASK]'
+
+# Loss weights
+process_supervision_weight_1: 1.0
+process_supervision_weight_2: 1.0
+constraint_weight: 1.0
+
+# Denoising settings
+mask_embedding_sentence_delta: true
+mask_embedding_sentence_delta_freeze: false
+mask_embedding_sentence_org_mlp: false
+
+

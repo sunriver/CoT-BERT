@@ -1,0 +1,22 @@
+model_name_or_path: "../result/CrossTemplateCoT-BERT-mac_m4"
+output_dir: "../result/CrossTemplateCoT-BERT-eval-mac_m4"
+do_eval: true
+do_train: false
+fp16: false
+use_mps_device: true
+seed: 0
+
+# Evaluation settings
+task_set: sts
+mode: test
+
+# CrossTemplateCoT specific arguments
+temperature: 0.05
+
+# Template arguments (与训练时保持一致)
+mask_embedding_sentence: true
+mask_embedding_sentence_template: 'The sentence of "[X]" means [MASK], so it can be summarized as [MASK].'
+mask_embedding_sentence_different_template: 'The sentence ："[X]" means [MASK], so it can be summarized as [MASK].'
+mask_embedding_sentence_negative_template: 'The sentence ："[X]" does not mean [MASK], so it cannot be summarized as [MASK]'
+
+
