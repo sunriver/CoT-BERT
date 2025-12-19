@@ -3,19 +3,19 @@ train_file: "../data/wiki1m_for_simcse.txt"
 output_dir: "../result/CrossTemplateCoT-BERT-linux_cuda"
 num_train_epochs: 1
 per_device_train_batch_size: 64
-gradient_accumulation_steps: 2
+gradient_accumulation_steps: 1
 learning_rate: 5e-5
 max_seq_length: 32
 evaluation_strategy: steps
 metric_for_best_model: eval_stsb_spearman
 load_best_model_at_end: true
-eval_steps: 100
+eval_steps: 10
 
 save_strategy: steps
-save_steps: 100
+save_steps: 10
 save_total_limit: 1
 
-logging_steps: 100
+logging_steps: 10
 
 overwrite_output_dir: true
 do_train: true
