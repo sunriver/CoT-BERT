@@ -514,7 +514,7 @@ def cross_template_cot_forward(cls,
     #     eps=eps
     # )
     
-    # # 总损失：加权求和
+    # 总损失：加权求和
     # weight_1 = getattr(cls.model_args, 'process_supervision_weight_1', 1.0)
     # weight_2 = getattr(cls.model_args, 'process_supervision_weight_2', 1.0)
     # weight_3 = getattr(cls.model_args, 'constraint_weight', 1.0)
