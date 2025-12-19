@@ -126,7 +126,10 @@ def compute_infonce_loss(anchor, positive, negative, similarity, loss_fct):
     """
     计算 InfoNCE 损失
     
-    使用共享的 Similarity 类自动处理归一化和温度缩放
+    与 models.py 的实现保持一致：
+    - 使用 [batch_size, batch_size] 相似度矩阵，对角线为正样本对
+    - 将 negative 作为 hard negative 追加到右侧
+    - 使用 torch.arange 作为标签（对角线索引）
     
     Args:
         anchor: [batch_size, hidden_size] 锚句表示
@@ -141,32 +144,23 @@ def compute_infonce_loss(anchor, positive, negative, similarity, loss_fct):
     batch_size = anchor.size(0)
     device = anchor.device
     
-    # 计算正样本相似度（锚句与对应正样本的相似度）
-    # 使用 unsqueeze 创建广播形状，然后提取对角线元素
-    pos_sim_matrix = similarity(anchor.unsqueeze(1), positive.unsqueeze(0))  # [batch_size, batch_size]
-    pos_sim = pos_sim_matrix.diag().unsqueeze(1)  # [batch_size, 1] - 提取对角线
-    pos_sim = torch.clamp(pos_sim, min=-50.0, max=50.0)
+    # 主相似度矩阵：anchor 与 positive 的相似度
+    # 形状: [batch_size, batch_size]
+    # 对角线 [i, i] 是正样本对 (anchor[i], positive[i])
+    # 非对角线 [i, j] where i != j 是负样本对 (anchor[i], positive[j])
+    cos_sim = similarity(anchor.unsqueeze(1), positive.unsqueeze(0))  # [batch_size, batch_size]
     
-    # 构建负样本候选池：[anchor, positive, negative]
-    # 形状: [batch_size * 3, hidden_size]
-    all_candidates = torch.cat([anchor, positive, negative], dim=0)
+    # Hard negative 处理：将 negative 追加到右侧（类似 models.py 中的 z3）
+    # 计算 anchor 与 negative 的相似度
+    anchor_negative_cos = similarity(anchor.unsqueeze(1), negative.unsqueeze(0))  # [batch_size, batch_size]
+    # 计算 positive 与 negative 的相似度
+    positive_negative_cos = similarity(positive.unsqueeze(1), negative.unsqueeze(0))  # [batch_size, batch_size]
+    # 追加到右侧
+    cos_sim = torch.cat([cos_sim, anchor_negative_cos, positive_negative_cos], dim=1)  # [batch_size, batch_size * 3]
     
-    # 计算锚句与所有候选的相似度
-    # 形状: [batch_size, batch_size * 3]
-    neg_sim = similarity(anchor.unsqueeze(1), all_candidates.unsqueeze(0))  # [batch_size, batch_size * 3]
-    neg_sim = torch.clamp(neg_sim, min=-50.0, max=50.0)
-    
-    # 排除自身：当前 batch 的 anchor 和 positive 不应该作为负样本
-    batch_range = torch.arange(batch_size, device=device)
-    neg_sim[:, batch_range] = float("-inf")  # 排除 anchor 自身
-    neg_sim[:, batch_size + batch_range] = float("-inf")  # 排除对应的 positive
-    
-    # 组合相似度矩阵：[正样本相似度 | 所有负样本相似度]
-    # 形状: [batch_size, 1 + batch_size * 3]
-    cos_sim = torch.cat([pos_sim, neg_sim], dim=1)
-    
-    # 标签：正样本在第 0 列
-    labels = torch.zeros(batch_size, dtype=torch.long, device=device)
+    # 标签：使用对角线索引（与 models.py 一致）
+    # labels[i] = i 表示第 i 个样本的正样本在对角线位置 [i, i]
+    labels = torch.arange(cos_sim.size(0), dtype=torch.long, device=device)
     
     # 计算 InfoNCE 损失
     loss = loss_fct(cos_sim, labels)
@@ -520,12 +514,13 @@ def cross_template_cot_forward(cls,
     #     eps=eps
     # )
     
-    # 总损失：加权求和
-    weight_1 = getattr(cls.model_args, 'process_supervision_weight_1', 1.0)
-    weight_2 = getattr(cls.model_args, 'process_supervision_weight_2', 1.0)
-    weight_3 = getattr(cls.model_args, 'constraint_weight', 1.0)
+    # # 总损失：加权求和
+    # weight_1 = getattr(cls.model_args, 'process_supervision_weight_1', 1.0)
+    # weight_2 = getattr(cls.model_args, 'process_supervision_weight_2', 1.0)
+    # weight_3 = getattr(cls.model_args, 'constraint_weight', 1.0)
     
-    loss = 0.2 * L1 + 0.8 * L2
+    loss = 0.5 * L1 + 0.5 * L2
+    # loss = L2
     
     logits = h2_anchor  # 使用第二个MASK的锚句表示作为logits
     
@@ -559,7 +554,8 @@ def cross_template_cot_sentemb_forward(
 ):
     """
     句子嵌入前向传播（用于SentEval评估）
-    默认使用锚句模板中第二个MASK的位置表示作为句子表示，并进行归一化。
+    默认使用锚句模板中第二个MASK的位置表示作为句子表示。
+    不进行归一化，与 models.py 保持一致（SentEval 内部会自动归一化）。
     """
     return_dict = return_dict if return_dict is not None else cls.config.use_return_dict
 
@@ -672,8 +668,8 @@ def cross_template_cot_sentemb_forward(
     if cls.mlp is not None:
         h_anchor = cls.mlp(h_anchor)
 
-    eps = 1e-8
-    pooler_output = F.normalize(h_anchor, p=2, dim=-1, eps=eps)
+    # 直接使用 h_anchor 作为 pooler_output（不归一化，与 models.py 保持一致）
+    pooler_output = h_anchor
 
     if not return_dict:
         return (encoder_outputs[0], pooler_output) + encoder_outputs[2:]
