@@ -122,6 +122,108 @@ def denoising(cls, encoder, template_ids, prefix_ids, suffix_ids, mask_token_id,
         return noise, template_length
 
 
+def compute_infonce_loss(anchor, positive, negative, similarity, loss_fct):
+    """
+    计算 InfoNCE 损失
+    
+    使用共享的 Similarity 类自动处理归一化和温度缩放
+    
+    Args:
+        anchor: [batch_size, hidden_size] 锚句表示
+        positive: [batch_size, hidden_size] 正样本表示
+        negative: [batch_size, hidden_size] 负样本表示
+        similarity: Similarity 实例（共享使用，内部已配置温度参数）
+        loss_fct: 交叉熵损失函数
+    
+    Returns:
+        loss: InfoNCE 损失值
+    """
+    batch_size = anchor.size(0)
+    device = anchor.device
+    
+    # 计算正样本相似度（锚句与对应正样本的相似度）
+    # 使用 unsqueeze 创建广播形状，然后提取对角线元素
+    pos_sim_matrix = similarity(anchor.unsqueeze(1), positive.unsqueeze(0))  # [batch_size, batch_size]
+    pos_sim = pos_sim_matrix.diag().unsqueeze(1)  # [batch_size, 1] - 提取对角线
+    pos_sim = torch.clamp(pos_sim, min=-50.0, max=50.0)
+    
+    # 构建负样本候选池：[anchor, positive, negative]
+    # 形状: [batch_size * 3, hidden_size]
+    all_candidates = torch.cat([anchor, positive, negative], dim=0)
+    
+    # 计算锚句与所有候选的相似度
+    # 形状: [batch_size, batch_size * 3]
+    neg_sim = similarity(anchor.unsqueeze(1), all_candidates.unsqueeze(0))  # [batch_size, batch_size * 3]
+    neg_sim = torch.clamp(neg_sim, min=-50.0, max=50.0)
+    
+    # 排除自身：当前 batch 的 anchor 和 positive 不应该作为负样本
+    batch_range = torch.arange(batch_size, device=device)
+    neg_sim[:, batch_range] = float("-inf")  # 排除 anchor 自身
+    neg_sim[:, batch_size + batch_range] = float("-inf")  # 排除对应的 positive
+    
+    # 组合相似度矩阵：[正样本相似度 | 所有负样本相似度]
+    # 形状: [batch_size, 1 + batch_size * 3]
+    cos_sim = torch.cat([pos_sim, neg_sim], dim=1)
+    
+    # 标签：正样本在第 0 列
+    labels = torch.zeros(batch_size, dtype=torch.long, device=device)
+    
+    # 计算 InfoNCE 损失
+    loss = loss_fct(cos_sim, labels)
+    
+    # 检查并处理 NaN 和 Inf
+    if torch.isnan(loss) or torch.isinf(loss):
+        loss = torch.tensor(0.0, device=device, requires_grad=True)
+    
+    return loss
+
+
+def compute_constraint_loss(h1_anchor, h1_positive, h2_anchor, h2_positive, eps=1e-8):
+    """
+    计算约束项损失 L3
+    
+    L3 = (||(h2_positive - h1_anchor)|| + ||(h2_anchor - h1_positive)||) 
+         / (||h2_anchor|| + ||h2_positive||² + ε)
+    
+    该损失用于增强第一阶段表示（h1_anchor, h1_positive）来推动
+    第二阶段表示（h2_anchor, h2_positive）的优化。
+    
+    Args:
+        h1_anchor: [batch_size, hidden_size] 第一阶段锚句表示
+        h1_positive: [batch_size, hidden_size] 第一阶段正样本表示
+        h2_anchor: [batch_size, hidden_size] 第二阶段锚句表示
+        h2_positive: [batch_size, hidden_size] 第二阶段正样本表示
+        eps: 数值稳定性参数
+    
+    Returns:
+        loss: 约束项损失值
+    """
+    # 计算分子：两个差异向量的 L2 范数之和
+    diff_1 = h2_positive - h1_anchor  # [batch_size, hidden_size]
+    diff_2 = h2_anchor - h1_positive  # [batch_size, hidden_size]
+    
+    norm_diff_1 = torch.norm(diff_1, p=2, dim=-1)  # [batch_size]
+    norm_diff_2 = torch.norm(diff_2, p=2, dim=-1)  # [batch_size]
+    numerator = norm_diff_1 + norm_diff_2
+    
+    # 计算分母：第二阶段表示的范数
+    norm_h2_anchor = torch.norm(h2_anchor, p=2, dim=-1)  # [batch_size]
+    norm_h2_positive = torch.norm(h2_positive, p=2, dim=-1)  # [batch_size]
+    denominator = norm_h2_anchor + norm_h2_positive ** 2 + eps
+    
+    # 确保分母不会太小，避免数值不稳定
+    denominator = torch.clamp(denominator, min=eps * 10)
+    
+    # 计算损失
+    loss = (numerator / denominator).mean()
+    
+    # 检查并处理 NaN 和 Inf
+    if torch.isnan(loss) or torch.isinf(loss):
+        loss = torch.tensor(0.0, device=loss.device, requires_grad=True)
+    
+    return loss
+
+
 def cross_template_cot_init(cls, config, temperature=0.05):
     """
     跨模板CoT模型初始化函数
@@ -162,9 +264,18 @@ def cross_template_cot_forward(cls,
     """
     跨模板CoT前向传播函数
     
+    流程：
     1. 使用3个模板（锚句、正样本、负样本）提取6个MASK表示
+       - h1_anchor, h2_anchor: 锚句模板的两个MASK
+       - h1_positive, h2_positive: 正样本模板的两个MASK
+       - h1_negative, h2_negative: 负样本模板的两个MASK
+    
     2. 使用delta去噪方法去除位置噪声
-    3. 计算3个损失：L1（第一个MASK的InfoNCE）、L2（第二个MASK的InfoNCE）、L3（约束项）
+    
+    3. 计算3个损失：
+       - L1: 第一个MASK位置的InfoNCE损失（过程监督）
+       - L2: 第二个MASK位置的InfoNCE损失（过程监督）
+       - L3: 约束项损失（增强第一阶段表示推动第二阶段表示）
     """
     return_dict = return_dict if return_dict is not None else cls.config.use_return_dict
     
@@ -370,88 +481,51 @@ def cross_template_cot_forward(cls,
         h1_negative = cls.mlp(h1_negative)
         h2_negative = cls.mlp(h2_negative)
     
-    # 计算损失
+    # 计算三个损失组件
     eps = 1e-8
     loss_fct = nn.CrossEntropyLoss()
     
-    # L1: 过程监督InfoNCE Loss 1（第一个MASK位置）
+    # 创建共享的 Similarity 实例（避免重复创建）
+    similarity = Similarity(temp=cls.temperature)
+    
+    # L1: 第一个 MASK 位置的 InfoNCE 损失（过程监督）
     # 正样本对：(h1_anchor, h1_positive)
-    # 负样本：h1_negative 以及batch内其他样本的 h1_anchor, h1_positive, h1_negative
-    h1_anchor_norm = F.normalize(h1_anchor, p=2, dim=-1, eps=eps)
-    h1_positive_norm = F.normalize(h1_positive, p=2, dim=-1, eps=eps)
-    h1_negative_norm = F.normalize(h1_negative, p=2, dim=-1, eps=eps)
+    # 负样本：h1_negative 以及 batch 内其他样本的 h1_anchor, h1_positive, h1_negative
+    L1 = compute_infonce_loss(
+        anchor=h1_anchor,
+        positive=h1_positive,
+        negative=h1_negative,
+        similarity=similarity,
+        loss_fct=loss_fct
+    )
     
-    # 正样本相似度
-    pos_sim_1 = (h1_anchor_norm * h1_positive_norm).sum(dim=-1, keepdim=True) / cls.temperature
-    pos_sim_1 = torch.clamp(pos_sim_1, min=-50.0, max=50.0)
-    
-    # 构建负样本候选池
-    h1_all = torch.cat([h1_anchor_norm, h1_positive_norm, h1_negative_norm], dim=0)  # [batch_size * 3, hidden_size]
-    
-    # 计算锚句与所有候选的相似度
-    neg_sim_1 = torch.mm(h1_anchor_norm, h1_all.t()) / cls.temperature
-    neg_sim_1 = torch.clamp(neg_sim_1, min=-50.0, max=50.0)
-    
-    # 排除自身：当前batch的anchor和positive不应该作为负样本
-    batch_range = torch.arange(batch_size, device=h1_anchor_norm.device)
-    neg_sim_1[:, batch_range] = float("-inf")  # 排除anchor
-    neg_sim_1[:, batch_size + batch_range] = float("-inf")  # 排除positive
-    
-    # 组合相似度矩阵
-    cos_sim_1 = torch.cat([pos_sim_1, neg_sim_1], dim=1)
-    labels_infonce_1 = torch.zeros(batch_size, dtype=torch.long, device=h1_anchor_norm.device)
-    L1 = loss_fct(cos_sim_1, labels_infonce_1)
-    
-    # 检查并处理 NaN 和 Inf
-    if torch.isnan(L1) or torch.isinf(L1):
-        L1 = torch.tensor(0.0, device=L1.device, requires_grad=True)
-    
-    # L2: 过程监督InfoNCE Loss 2（第二个MASK位置）
-    h2_anchor_norm = F.normalize(h2_anchor, p=2, dim=-1, eps=eps)
-    h2_positive_norm = F.normalize(h2_positive, p=2, dim=-1, eps=eps)
-    h2_negative_norm = F.normalize(h2_negative, p=2, dim=-1, eps=eps)
-    
-    pos_sim_2 = (h2_anchor_norm * h2_positive_norm).sum(dim=-1, keepdim=True) / cls.temperature
-    pos_sim_2 = torch.clamp(pos_sim_2, min=-50.0, max=50.0)
-    
-    h2_all = torch.cat([h2_anchor_norm, h2_positive_norm, h2_negative_norm], dim=0)
-    neg_sim_2 = torch.mm(h2_anchor_norm, h2_all.t()) / cls.temperature
-    neg_sim_2 = torch.clamp(neg_sim_2, min=-50.0, max=50.0)
-    
-    neg_sim_2[:, batch_range] = float("-inf")
-    neg_sim_2[:, batch_size + batch_range] = float("-inf")
-    
-    cos_sim_2 = torch.cat([pos_sim_2, neg_sim_2], dim=1)
-    labels_infonce_2 = torch.zeros(batch_size, dtype=torch.long, device=h2_anchor_norm.device)
-    L2 = loss_fct(cos_sim_2, labels_infonce_2)
-    
-    # 检查并处理 NaN 和 Inf
-    if torch.isnan(L2) or torch.isinf(L2):
-        L2 = torch.tensor(0.0, device=L2.device, requires_grad=True)
+    # L2: 第二个 MASK 位置的 InfoNCE 损失（过程监督）
+    # 正样本对：(h2_anchor, h2_positive)
+    # 负样本：h2_negative 以及 batch 内其他样本的 h2_anchor, h2_positive, h2_negative
+    L2 = compute_infonce_loss(
+        anchor=h2_anchor,
+        positive=h2_positive,
+        negative=h2_negative,
+        similarity=similarity,
+        loss_fct=loss_fct
+    )
     
     # L3: 约束项损失
-    # L3 = (||(h2_positive-h1_anchor)|| + ||(h2_anchor-h1_positive)||) / (||h2_anchor|| + ||h2_positive||² + ε)
-    h2_positive_minus_h1_anchor = h2_positive - h1_anchor  # [batch_size, hidden_size]
-    h2_anchor_minus_h1_positive = h2_anchor - h1_positive  # [batch_size, hidden_size]
+    # 增强第一阶段表示（h1_anchor, h1_positive）来推动第二阶段表示（h2_anchor, h2_positive）的优化
+    # L3 = compute_constraint_loss(
+    #     h1_anchor=h1_anchor,
+    #     h1_positive=h1_positive,
+    #     h2_anchor=h2_anchor,
+    #     h2_positive=h2_positive,
+    #     eps=eps
+    # )
     
-    numerator = torch.norm(h2_positive_minus_h1_anchor, p=2, dim=-1) + torch.norm(h2_anchor_minus_h1_positive, p=2, dim=-1)  # [batch_size]
-    denominator = torch.norm(h2_anchor, p=2, dim=-1) + torch.norm(h2_positive, p=2, dim=-1) ** 2 + eps  # [batch_size]
-    
-    # 确保分母不会太小，避免数值不稳定
-    denominator = torch.clamp(denominator, min=eps * 10)  # 至少为 eps * 10
-    
-    L3 = (numerator / denominator).mean()
-    
-    # 检查并处理 NaN 和 Inf
-    if torch.isnan(L3) or torch.isinf(L3):
-        L3 = torch.tensor(0.0, device=L3.device, requires_grad=True)
-    
-    # 总损失：L1 + L2 + L3（等权重）
+    # 总损失：加权求和
     weight_1 = getattr(cls.model_args, 'process_supervision_weight_1', 1.0)
     weight_2 = getattr(cls.model_args, 'process_supervision_weight_2', 1.0)
     weight_3 = getattr(cls.model_args, 'constraint_weight', 1.0)
     
-    loss = weight_1 * L1 + weight_2 * L2 + weight_3 * L3
+    loss = 0.2 * L1 + 0.8 * L2
     
     logits = h2_anchor  # 使用第二个MASK的锚句表示作为logits
     

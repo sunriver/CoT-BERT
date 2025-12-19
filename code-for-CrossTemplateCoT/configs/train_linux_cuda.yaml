@@ -1,10 +1,10 @@
-model_name_or_path: "/path/to/bert-base-uncased"
+model_name_or_path: "/data/output/workspace_gpu2/pretrain_models/bert-base-uncased"
 train_file: "../data/wiki1m_for_simcse.txt"
 output_dir: "../result/CrossTemplateCoT-BERT-linux_cuda"
 num_train_epochs: 1
-per_device_train_batch_size: 128
-gradient_accumulation_steps: 1
-learning_rate: 1e-5
+per_device_train_batch_size: 64
+gradient_accumulation_steps: 2
+learning_rate: 5e-5
 max_seq_length: 32
 evaluation_strategy: steps
 metric_for_best_model: eval_stsb_spearman
@@ -34,7 +34,7 @@ mask_embedding_sentence: true
 mask_num: 2
 mask_embedding_sentence_template: 'The sentence of "[X]" means [MASK], so it can be summarized as [MASK].'
 mask_embedding_sentence_different_template: 'The sentence ："[X]" means [MASK], so it can be summarized as [MASK].'
-mask_embedding_sentence_negative_template: 'The sentence ："[X]" does not mean [MASK], so it cannot be summarized as [MASK]'
+mask_embedding_sentence_negative_template: 'The sentence ："[X]" does not mean [MASK], so it cannot be summarized as [MASK].'
 
 # Loss weights
 process_supervision_weight_1: 1.0
