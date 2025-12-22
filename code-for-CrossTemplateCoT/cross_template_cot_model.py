@@ -519,7 +519,7 @@ def cross_template_cot_forward(cls,
     # weight_2 = getattr(cls.model_args, 'process_supervision_weight_2', 1.0)
     # weight_3 = getattr(cls.model_args, 'constraint_weight', 1.0)
     
-    loss = 0.5 * L1 + 0.5 * L2
+    loss = L1 +  L2
     # loss = L2
     
     logits = h2_anchor  # 使用第二个MASK的锚句表示作为logits
