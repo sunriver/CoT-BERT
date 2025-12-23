@@ -226,7 +226,14 @@ def cross_template_cot_init(cls, config, temperature=0.05):
     cls.similarity = Similarity(temp=temperature)
     
     # 可选MLP层（用于去噪前预处理）
-    if cls.model_args.mask_embedding_sentence_org_mlp:
+    # 使用 getattr 安全访问属性，参考 PrismDecomp 的实现方式
+    # 如果 model_args 不存在或为 None，默认使用 False
+    if hasattr(cls, "model_args") and cls.model_args is not None:
+        mask_mlp_value = getattr(cls.model_args, 'mask_embedding_sentence_org_mlp', False)
+    else:
+        mask_mlp_value = False
+    
+    if mask_mlp_value:
         from transformers.models.bert.modeling_bert import BertPredictionHeadTransform
         cls.mlp = BertPredictionHeadTransform(config)
     else:
@@ -514,13 +521,26 @@ def cross_template_cot_forward(cls,
     #     eps=eps
     # )
     
-    # # 总损失：加权求和
-    # weight_1 = getattr(cls.model_args, 'process_supervision_weight_1', 1.0)
-    # weight_2 = getattr(cls.model_args, 'process_supervision_weight_2', 1.0)
-    # weight_3 = getattr(cls.model_args, 'constraint_weight', 1.0)
+    # 总损失：加权求和
+    # 注意：评估时只使用第二个 MASK (h2_anchor)，所以应该主要优化 L2
+    # 但 L1 作为过程监督也很重要，可以帮助模型学习更好的表示
+    weight_1 = getattr(cls.model_args, 'process_supervision_weight_1', 0.0)  # 默认只使用 L2
+    weight_2 = getattr(cls.model_args, 'process_supervision_weight_2', 1.0)  # 默认只使用 L2
+    weight_3 = getattr(cls.model_args, 'constraint_weight', 0.0)  # 默认不使用约束损失
     
-    loss = L1 +  L2
-    # loss = L2
+    # 确保权重和为 1.0（归一化）
+    total_weight = weight_1 + weight_2 + weight_3
+    if total_weight > 0:
+        weight_1 = weight_1 / total_weight
+        weight_2 = weight_2 / total_weight
+        weight_3 = weight_3 / total_weight
+    else:
+        # 如果所有权重都为 0，默认只使用 L2
+        weight_1 = 0.0
+        weight_2 = 1.0
+        weight_3 = 0.0
+    
+    loss = weight_1 * L1 + weight_2 * L2
     
     logits = h2_anchor  # 使用第二个MASK的锚句表示作为logits
     

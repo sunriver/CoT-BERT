@@ -35,9 +35,8 @@ temp: 0.05
 mask_embedding_sentence: true
 mask_num: 2
 mask_embedding_sentence_template: 'The sentence of "[X]" means [MASK], so it can be summarized as [MASK].'
-mask_embedding_sentence_different_template: 'The sentence ："[X]" means [MASK], so it can be summarized as [MASK].'
-mask_embedding_sentence_negative_template: 'The sentence ："[X]" does not mean [MASK], so it cannot be summarized as [MASK]'
-
+mask_embedding_sentence_different_template: 'The sentence : "[X]" means [MASK], so it can be summarized as [MASK].'
+mask_embedding_sentence_negative_template: 'The sentence : "[X]" does not mean [MASK], so it cannot be summarized as [MASK].'
 # Loss weights
 process_supervision_weight_1: 1.0
 process_supervision_weight_2: 1.0

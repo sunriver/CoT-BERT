@@ -16,7 +16,6 @@ temperature: 0.05
 # Template arguments (与训练时保持一致)
 mask_embedding_sentence: true
 mask_embedding_sentence_template: 'The sentence of "[X]" means [MASK], so it can be summarized as [MASK].'
-mask_embedding_sentence_different_template: 'The sentence ："[X]" means [MASK], so it can be summarized as [MASK].'
-mask_embedding_sentence_negative_template: 'The sentence ："[X]" does not mean [MASK], so it cannot be summarized as [MASK]'
-
+mask_embedding_sentence_different_template: 'The sentence : "[X]" means [MASK], so it can be summarized as [MASK].'
+mask_embedding_sentence_negative_template: 'The sentence : "[X]" does not mean [MASK], so it cannot be summarized as [MASK].'
 

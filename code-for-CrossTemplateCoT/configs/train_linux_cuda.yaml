@@ -4,7 +4,7 @@ output_dir: "../result/CrossTemplateCoT-BERT-linux_cuda"
 num_train_epochs: 1
 per_device_train_batch_size: 64
 gradient_accumulation_steps: 1
-learning_rate: 5e-5
+learning_rate: 1e-5
 max_seq_length: 32
 evaluation_strategy: steps
 metric_for_best_model: eval_stsb_spearman
@@ -24,6 +24,7 @@ preprocessing_num_workers: 10
 use_mps_device: false
 dataloader_drop_last: true
 seed: 0
+overwrite_cache: false
 
 # CrossTemplateCoT specific arguments
 temperature: 0.05
@@ -33,9 +34,8 @@ temp: 0.05
 mask_embedding_sentence: true
 mask_num: 2
 mask_embedding_sentence_template: 'The sentence of "[X]" means [MASK], so it can be summarized as [MASK].'
-mask_embedding_sentence_different_template: 'The sentence ："[X]" means [MASK], so it can be summarized as [MASK].'
-mask_embedding_sentence_negative_template: 'The sentence ："[X]" does not mean [MASK], so it cannot be summarized as [MASK].'
-
+mask_embedding_sentence_different_template: 'The sentence : "[X]" means [MASK], so it can be summarized as [MASK].'
+mask_embedding_sentence_negative_template: 'The sentence : "[X]" does not mean [MASK], so it cannot be summarized as [MASK].'
 # Loss weights
 process_supervision_weight_1: 1.0
 process_supervision_weight_2: 1.0
