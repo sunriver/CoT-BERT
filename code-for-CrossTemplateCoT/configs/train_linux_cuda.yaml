@@ -9,13 +9,14 @@ max_seq_length: 32
 evaluation_strategy: steps
 metric_for_best_model: eval_stsb_spearman
 load_best_model_at_end: true
-eval_steps: 10
+eval_steps: 125
 
 save_strategy: steps
-save_steps: 10
+save_steps: 125
 save_total_limit: 1
 
 logging_steps: 10
+warmup_steps: 500
 
 overwrite_output_dir: true
 do_train: true
