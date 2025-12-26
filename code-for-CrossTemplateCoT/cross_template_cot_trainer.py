@@ -78,12 +78,12 @@ class CrossTemplateCoTTrainer(Trainer):
         positive_template = getattr(
             self.model_args,
             "mask_embedding_sentence_different_template",
-            'The sentence ："[X]" means [MASK], so it can be summarized as [MASK].',
+            'The sentence : "[X]" means [MASK], so it can be summarized as [MASK].',
         )
         negative_template = getattr(
             self.model_args,
             "mask_embedding_sentence_negative_template",
-            'The sentence ："[X]" does not mean [MASK], so it cannot be summarized as [MASK]',
+            'The sentence : "[X]" does not mean [MASK], so it cannot be summarized as [MASK].',
         )
 
         outputs = model(
@@ -194,7 +194,7 @@ class CrossTemplateCoTTrainer(Trainer):
 
         # SentEval配置
         params = {"task_path": PATH_TO_DATA, "usepytorch": True, "kfold": 5}
-        params["classifier"] = {"nhid": 0, "optim": "rmsprop", "batch_size": 128, "tenacity": 3, "epoch_size": 2}
+        params["classifier"] = {"nhid": 0, "optim": "rmsprop", "batch_size": 64, "tenacity": 3, "epoch_size": 1}
 
         se = senteval.engine.SE(params, batcher, prepare)
         tasks = ["STSBenchmark", "SICKRelatedness"]

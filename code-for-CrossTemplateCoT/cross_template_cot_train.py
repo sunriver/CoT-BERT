@@ -121,11 +121,11 @@ class ModelArguments:
         metadata={"help": "Anchor template"},
     )
     mask_embedding_sentence_different_template: str = field(
-        default='The sentence ："[X]" means [MASK], so it can be summarized as [MASK].',
+        default='The sentence : "[X]" means [MASK], so it can be summarized as [MASK].',
         metadata={"help": "Positive template"},
     )
     mask_embedding_sentence_negative_template: str = field(
-        default='The sentence ："[X]" does not mean [MASK], so it cannot be summarized as [MASK]',
+        default='The sentence : "[X]" does not mean [MASK], so it cannot be summarized as [MASK].',
         metadata={"help": "Negative template"},
     )
 

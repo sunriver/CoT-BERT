@@ -524,23 +524,12 @@ def cross_template_cot_forward(cls,
     # 总损失：加权求和
     # 注意：评估时只使用第二个 MASK (h2_anchor)，所以应该主要优化 L2
     # 但 L1 作为过程监督也很重要，可以帮助模型学习更好的表示
-    weight_1 = getattr(cls.model_args, 'process_supervision_weight_1', 0.0)  # 默认只使用 L2
-    weight_2 = getattr(cls.model_args, 'process_supervision_weight_2', 1.0)  # 默认只使用 L2
-    weight_3 = getattr(cls.model_args, 'constraint_weight', 0.0)  # 默认不使用约束损失
+    # weight_1 = getattr(cls.model_args, 'process_supervision_weight_1', 0.0)  # 默认只使用 L2
+    # weight_2 = getattr(cls.model_args, 'process_supervision_weight_2', 1.0)  # 默认只使用 L2
+    # weight_3 = getattr(cls.model_args, 'constraint_weight', 0.0)  # 默认不使用约束损失
+
     
-    # 确保权重和为 1.0（归一化）
-    total_weight = weight_1 + weight_2 + weight_3
-    if total_weight > 0:
-        weight_1 = weight_1 / total_weight
-        weight_2 = weight_2 / total_weight
-        weight_3 = weight_3 / total_weight
-    else:
-        # 如果所有权重都为 0，默认只使用 L2
-        weight_1 = 0.0
-        weight_2 = 1.0
-        weight_3 = 0.0
-    
-    loss = weight_1 * L1 + weight_2 * L2
+    loss = L1 + L2
     
     logits = h2_anchor  # 使用第二个MASK的锚句表示作为logits
     
@@ -640,49 +629,49 @@ def cross_template_cot_sentemb_forward(
     h_anchor = h_masks[:, 1, :]  # 第二个MASK表示 [batch_size * num_templates, hidden_size]
 
     # Delta去噪（仅对锚句模板）
-    # if cls.model_args and getattr(cls.model_args, "mask_embedding_sentence_delta", False):
-    #     device = input_ids.device
-    #     pad_token_id = tokenizer.pad_token_id
-    #     total_length = input_ids.size(-1)
-    #     mask_num = 2
+    if cls.model_args and getattr(cls.model_args, "mask_embedding_sentence_delta", False):
+        device = input_ids.device
+        pad_token_id = tokenizer.pad_token_id
+        total_length = input_ids.size(-1)
+        mask_num = 2
 
-    #     if anchor_template is None:
-    #         anchor_template = 'The sentence of "[X]" means [MASK], so it can be summarized as [MASK].'
+        if anchor_template is None:
+            anchor_template = 'The sentence of "[X]" means [MASK], so it can be summarized as [MASK].'
 
-    #     parts = anchor_template.split("[X]")
-    #     prefix = parts[0]
-    #     suffix = parts[1] if len(parts) > 1 else ""
+        parts = anchor_template.split("[X]")
+        prefix = parts[0]
+        suffix = parts[1] if len(parts) > 1 else ""
 
-    #     prefix_ids = tokenizer.encode(prefix, add_special_tokens=False)
-    #     suffix_ids = tokenizer.encode(suffix, add_special_tokens=False)
-    #     template_ids = [tokenizer.cls_token_id] + prefix_ids + suffix_ids + [tokenizer.sep_token_id]
+        prefix_ids = tokenizer.encode(prefix, add_special_tokens=False)
+        suffix_ids = tokenizer.encode(suffix, add_special_tokens=False)
+        template_ids = [tokenizer.cls_token_id] + prefix_ids + suffix_ids + [tokenizer.sep_token_id]
 
-    #     noise, template_length = denoising(
-    #         cls=cls,
-    #         encoder=encoder,
-    #         template_ids=template_ids,
-    #         prefix_ids=prefix_ids,
-    #         suffix_ids=suffix_ids,
-    #         mask_token_id=mask_token_id,
-    #         pad_token_id=pad_token_id,
-    #         total_length=total_length,
-    #         mask_num=mask_num,
-    #         device=device,
-    #         evaluation=True,
-    #     )
+        noise, template_length = denoising(
+            cls=cls,
+            encoder=encoder,
+            template_ids=template_ids,
+            prefix_ids=prefix_ids,
+            suffix_ids=suffix_ids,
+            mask_token_id=mask_token_id,
+            pad_token_id=pad_token_id,
+            total_length=total_length,
+            mask_num=mask_num,
+            device=device,
+            evaluation=True,
+        )
 
-    #     attention_mask_reshaped = attention_mask.view(batch_size, num_templates, -1)
-    #     entire_lengths = attention_mask_reshaped.sum(dim=-1)  # [batch_size, num_templates]
-    #     token_lengths_anchor = entire_lengths[:, 0] - template_length
+        attention_mask_reshaped = attention_mask.view(batch_size, num_templates, -1)
+        entire_lengths = attention_mask_reshaped.sum(dim=-1)  # [batch_size, num_templates]
+        token_lengths_anchor = entire_lengths[:, 0] - template_length
 
-    #     h2_anchor_denoised = []
-    #     for i in range(batch_size):
-    #         tl_anchor = token_lengths_anchor[i].item()
-    #         tl_anchor = max(0, min(tl_anchor, noise.size(0) - 1))
-    #         # 第二个MASK使用索引1
-    #         h2_anchor_denoised.append(h_anchor[i] - noise[tl_anchor, 1, :])
+        h2_anchor_denoised = []
+        for i in range(batch_size):
+            tl_anchor = token_lengths_anchor[i].item()
+            tl_anchor = max(0, min(tl_anchor, noise.size(0) - 1))
+            # 第二个MASK使用索引1
+            h2_anchor_denoised.append(h_anchor[i] - noise[tl_anchor, 1, :])
 
-    #     h_anchor = torch.stack(h2_anchor_denoised)
+        h_anchor = torch.stack(h2_anchor_denoised)
 
     # 可选MLP
     if cls.mlp is not None:
