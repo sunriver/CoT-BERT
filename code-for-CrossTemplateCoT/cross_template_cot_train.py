@@ -518,7 +518,11 @@ def main():
         # 解析并设置锚句模板属性
         if model_args.mask_embedding_sentence_template != '': 
             template = model_args.mask_embedding_sentence_template
-            assert ' ' not in template
+            # 自动转换空格为下划线，以对齐 CoT-BERT 解析逻辑
+            if ' ' in template:
+                template = template.replace(' ', '_')
+            
+            assert ' ' not in template, f"Template contains spaces: {template}"
             template = template.replace('*mask*', tokenizer.mask_token)\
                                .replace('*sep+*', '').replace('*cls*', '').replace('*sent_0*', ' ')
             template = template.split(' ')
@@ -532,7 +536,10 @@ def main():
         # 解析并设置正样本模板属性
         if model_args.mask_embedding_sentence_different_template != '':
             template = model_args.mask_embedding_sentence_different_template
-            assert ' ' not in template
+            if ' ' in template:
+                template = template.replace(' ', '_')
+                
+            assert ' ' not in template, f"Template contains spaces: {template}"
             template = template.replace('*mask*', tokenizer.mask_token)\
                                .replace('*sep+*', '').replace('*cls*', '').replace('*sent_0*', ' ')
             template = template.split(' ')
@@ -546,7 +553,10 @@ def main():
         # 解析并设置负样本模板属性
         if model_args.mask_embedding_sentence_negative_template != '':
             template = model_args.mask_embedding_sentence_negative_template
-            assert ' ' not in template
+            if ' ' in template:
+                template = template.replace(' ', '_')
+                
+            assert ' ' not in template, f"Template contains spaces: {template}"
             template = template.replace('*mask*', tokenizer.mask_token)\
                                .replace('*sep+*', '').replace('*cls*', '').replace('*sent_0*', ' ')
             template = template.split(' ')

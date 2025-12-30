@@ -35,9 +35,9 @@ temp: 0.05
 # Template configuration
 mask_embedding_sentence: true
 mask_num: 2
-mask_embedding_sentence_template: 'The sentence of "[X]" means [MASK], so it can be summarized as [MASK].'
-mask_embedding_sentence_different_template: 'The sentence : "[X]" means [MASK], so it can be summarized as [MASK].'
-mask_embedding_sentence_negative_template: 'The sentence : "[X]" does not mean [MASK], so it cannot be summarized as [MASK].'
+mask_embedding_sentence_template: '*cls*_The_sentence_of_"*sent_0*"_means_*mask*_,_so_it_can_be_summarized_as_*mask*_._*sep+*'
+mask_embedding_sentence_different_template: '*cls*_The_sentence_:_"*sent_0*"_means_*mask*_,_so_it_can_be_summarized_as_*mask*_._*sep+*'
+mask_embedding_sentence_negative_template: '*cls*_The_sentence_:_"*sent_0*"_does_not_mean_*mask*_,_so_it_cannot_be_summarized_as_*mask*_._*sep+*'
 # Loss weights
 process_supervision_weight_1: 1.0
 process_supervision_weight_2: 1.0
