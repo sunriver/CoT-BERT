@@ -60,17 +60,19 @@ def denoising(cls, encoder, template, bs, es, device='cuda', evaluation=False):
     mask_token_id = cls.mask_token_id if hasattr(cls, "mask_token_id") else cls.config.mask_token_id
     pad_token_id = cls.pad_token_id if hasattr(cls, "pad_token_id") else cls.config.pad_token_id
     mask_num = cls.mask_num if hasattr(cls, "mask_num") else 2
-    total_length = cls.model_args.max_seq_length if hasattr(cls.model_args, "max_seq_length") else 32
+    
+    # 确保 total_length 足够覆盖 模板 + 最大句子长度
+    max_seq_length = cls.model_args.max_seq_length if hasattr(cls.model_args, "max_seq_length") else 32
+    template_length = len(template)
+    total_length = template_length + max_seq_length
 
     with torch.set_grad_enabled(not cls.model_args.mask_embedding_sentence_delta_freeze and not evaluation):
-        # 计算模板长度（不包括句子部分）
-        template_length = len(template)
-        
         # 滑动窗口：创建不同pad长度的输入
         input_ids_list = []
         attention_mask_list = []
         
-        max_pad_length = total_length - template_length + 1
+        # max_pad_length 应该覆盖所有可能的句子长度 [0, max_seq_length]
+        max_pad_length = max_seq_length + 1
         
         for i in range(max_pad_length):
             # 构建输入：[CLS] + prefix + [PAD]... + suffix + [SEP] + [PAD]...
@@ -407,6 +409,12 @@ def cross_template_cot_forward(cls,
         token_lengths_positive = entire_lengths[:, 1] - template_length_positive
         token_lengths_negative = entire_lengths[:, 2] - template_length_negative
         
+        # 限制索引范围，防止越界
+        max_idx = noise_anchor.size(0) - 1
+        token_lengths_anchor = torch.clamp(token_lengths_anchor, 0, max_idx)
+        token_lengths_positive = torch.clamp(token_lengths_positive, 0, max_idx)
+        token_lengths_negative = torch.clamp(token_lengths_negative, 0, max_idx)
+        
         # 应用去噪：从原始MASK表示中减去对应长度的噪声
         h1_anchor = h1_anchor - noise_anchor[token_lengths_anchor, 0, :]
         h2_anchor = h2_anchor - noise_anchor[token_lengths_anchor, 1, :]
@@ -560,6 +568,9 @@ def cross_template_cot_sentemb_forward(
         attention_mask_reshaped = attention_mask.view(batch_size, num_templates, -1)
         entire_lengths = attention_mask_reshaped.sum(dim=-1)  # [batch_size, num_templates]
         token_lengths_anchor = entire_lengths[:, 0] - template_length
+
+        # 限制索引范围，防止越界
+        token_lengths_anchor = torch.clamp(token_lengths_anchor, 0, noise.size(0) - 1)
 
         # 应用去噪
         h_anchor = h_anchor - noise[token_lengths_anchor, 1, :]
