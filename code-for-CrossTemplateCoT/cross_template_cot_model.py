@@ -39,21 +39,17 @@ class Similarity(nn.Module):
         return self.cos(x, y) / self.temp
 
 
-def denoising(cls, encoder, template_ids, prefix_ids, suffix_ids, mask_token_id, pad_token_id, 
-              total_length, mask_num, device='cuda', evaluation=False):
+def denoising(cls, encoder, template, bs, es, device='cuda', evaluation=False):
     """
     Delta去噪函数：提取位置相关的噪声
+    完全复用 CoT-BERT 的去噪逻辑。
     
     Args:
         cls: 模型类实例
         encoder: BERT编码器
-        template_ids: 模板的token ID列表（包含[CLS]和[SEP]）
-        prefix_ids: 模板前缀的token ID列表（[X]之前的部分）
-        suffix_ids: 模板后缀的token ID列表（[X]之后的部分）
-        mask_token_id: MASK token的ID
-        pad_token_id: PAD token的ID
-        total_length: 总长度（用于滑动窗口）
-        mask_num: MASK token的数量（本项目中为2）
+        template: 模板的token ID列表
+        bs: 模板前缀的token ID列表
+        es: 模板后缀的token ID列表
         device: 设备
         evaluation: 是否为评估模式
     
@@ -61,9 +57,14 @@ def denoising(cls, encoder, template_ids, prefix_ids, suffix_ids, mask_token_id,
         noise: 噪声张量，形状为 [max_pad_length, mask_num, hidden_size]
         template_length: 模板长度
     """
+    mask_token_id = cls.mask_token_id if hasattr(cls, "mask_token_id") else cls.config.mask_token_id
+    pad_token_id = cls.pad_token_id if hasattr(cls, "pad_token_id") else cls.config.pad_token_id
+    mask_num = cls.mask_num if hasattr(cls, "mask_num") else 2
+    total_length = cls.model_args.max_seq_length if hasattr(cls.model_args, "max_seq_length") else 32
+
     with torch.set_grad_enabled(not cls.model_args.mask_embedding_sentence_delta_freeze and not evaluation):
         # 计算模板长度（不包括句子部分）
-        template_length = len(prefix_ids) + len(suffix_ids) + 2  # +2 for [CLS] and [SEP]
+        template_length = len(template)
         
         # 滑动窗口：创建不同pad长度的输入
         input_ids_list = []
@@ -71,20 +72,17 @@ def denoising(cls, encoder, template_ids, prefix_ids, suffix_ids, mask_token_id,
         
         max_pad_length = total_length - template_length + 1
         
-        for pad_count in range(max_pad_length):
+        for i in range(max_pad_length):
             # 构建输入：[CLS] + prefix + [PAD]... + suffix + [SEP] + [PAD]...
             input_ids = (
-                [template_ids[0]] +  # [CLS]
-                prefix_ids +
-                [pad_token_id] * pad_count +
-                suffix_ids +
-                [template_ids[-1]] +  # [SEP]
-                [pad_token_id] * (total_length - template_length - pad_count)
+                [template[0]] + 
+                bs + 
+                [pad_token_id] * i +
+                es +
+                [template[-1]] +
+                [pad_token_id] * (total_length - template_length - i)
             )
-            attention_mask = (
-                [1] * (template_length + pad_count) +
-                [0] * (total_length - template_length - pad_count)
-            )
+            attention_mask = [1] * (template_length + i) + [0] * (total_length - template_length - i)
             
             input_ids_list.append(input_ids)
             attention_mask_list.append(attention_mask)
@@ -93,30 +91,17 @@ def denoising(cls, encoder, template_ids, prefix_ids, suffix_ids, mask_token_id,
         attention_mask = torch.tensor(attention_mask_list, device=device, dtype=torch.long)
         
         # 编码获取噪声
-        if evaluation:
-            with torch.no_grad():
-                outputs = encoder(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    output_hidden_states=True,
-                    return_dict=True
-                )
-                last_hidden = outputs.last_hidden_state
-                mask = input_ids == mask_token_id
-                noise = last_hidden[mask]  # [total_masks, hidden_size]
-        else:
-            outputs = encoder(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                output_hidden_states=True,
-                return_dict=True
-            )
-            last_hidden = outputs.last_hidden_state
-            mask = input_ids == mask_token_id
-            noise = last_hidden[mask]  # [total_masks, hidden_size]
+        outputs = encoder(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            output_hidden_states=True,
+            return_dict=True
+        )
+        last_hidden = outputs.last_hidden_state
+        mask = input_ids == mask_token_id
+        noise = last_hidden[mask]  # [total_masks, hidden_size]
         
         # 重新组织噪声：[max_pad_length, mask_num, hidden_size]
-        # 每个pad长度对应mask_num个MASK token的噪声
         noise = noise.view(max_pad_length, mask_num, -1)
         
         return noise, template_length
@@ -150,13 +135,11 @@ def compute_infonce_loss(anchor, positive, negative, similarity, loss_fct):
     # 非对角线 [i, j] where i != j 是负样本对 (anchor[i], positive[j])
     cos_sim = similarity(anchor.unsqueeze(1), positive.unsqueeze(0))  # [batch_size, batch_size]
     
-    # Hard negative 处理：将 negative 追加到右侧（类似 models.py 中的 z3）
+    # Hard negative 处理：将 negative 追加到右侧（优化：移除 positive_negative_cos，仅保留 anchor_negative_cos）
     # 计算 anchor 与 negative 的相似度
     anchor_negative_cos = similarity(anchor.unsqueeze(1), negative.unsqueeze(0))  # [batch_size, batch_size]
-    # 计算 positive 与 negative 的相似度
-    positive_negative_cos = similarity(positive.unsqueeze(1), negative.unsqueeze(0))  # [batch_size, batch_size]
-    # 追加到右侧
-    cos_sim = torch.cat([cos_sim, anchor_negative_cos, positive_negative_cos], dim=1)  # [batch_size, batch_size * 3]
+    # 追加到右侧（优化：移除 positive_negative_cos，仅保留 anchor_negative_cos）
+    cos_sim = torch.cat([cos_sim, anchor_negative_cos], dim=1)  # [batch_size, batch_size * 2]
     
     # 标签：使用对角线索引（与 models.py 一致）
     # labels[i] = i 表示第 i 个样本的正样本在对角线位置 [i, i]
@@ -366,115 +349,16 @@ def cross_template_cot_forward(cls,
     h_negative = h_masks[2*batch_size:]  # [batch_size, 2, hidden_size]
     
     # 提取第一个和第二个MASK表示
-    h1_anchor = h_anchor[:, 0, :]  # [batch_size, hidden_size]
-    h2_anchor = h_anchor[:, 1, :]  # [batch_size, hidden_size]
-    h1_positive = h_positive[:, 0, :]  # [batch_size, hidden_size]
-    h2_positive = h_positive[:, 1, :]  # [batch_size, hidden_size]
-    h1_negative = h_negative[:, 0, :]  # [batch_size, hidden_size]
-    h2_negative = h_negative[:, 1, :]  # [batch_size, hidden_size]
+    # 与 CoT-BERT 对齐：训练和评估都只使用第二个 MASK
+    h1_anchor = h_anchor[:, 0, :]  # [batch_size, hidden_size] - 保留用于去噪
+    h2_anchor = h_anchor[:, 1, :]  # [batch_size, hidden_size] - 用于损失和输出
+    h1_positive = h_positive[:, 0, :]  # [batch_size, hidden_size] - 保留用于去噪
+    h2_positive = h_positive[:, 1, :]  # [batch_size, hidden_size] - 用于损失和输出
+    h1_negative = h_negative[:, 0, :]  # [batch_size, hidden_size] - 保留用于去噪
+    h2_negative = h_negative[:, 1, :]  # [batch_size, hidden_size] - 用于损失和输出
     
-    # Delta去噪处理
-    if cls.model_args.mask_embedding_sentence_delta:
-        # 准备模板信息用于去噪
-        device = input_ids.device
-        pad_token_id = tokenizer.pad_token_id
-        total_length = input_ids.size(-1)
-        mask_num = 2
-        
-        # 解析三个模板
-        templates = [anchor_template, positive_template, negative_template]
-        template_prefixes = []
-        template_suffixes = []
-        template_ids_list = []
-        
-        for template in templates:
-            parts = template.split('[X]')
-            prefix = parts[0]
-            suffix = parts[1] if len(parts) > 1 else ""
-            
-            # 编码模板部分
-            prefix_ids = tokenizer.encode(prefix, add_special_tokens=False)
-            suffix_ids = tokenizer.encode(suffix, add_special_tokens=False)
-            template_ids = [tokenizer.cls_token_id] + prefix_ids + suffix_ids + [tokenizer.sep_token_id]
-            
-            template_prefixes.append(prefix_ids)
-            template_suffixes.append(suffix_ids)
-            template_ids_list.append(template_ids)
-        
-        # 为每个模板提取噪声
-        noise_list = []
-        template_lengths = []
-        
-        for i, (prefix_ids, suffix_ids, template_ids) in enumerate(zip(template_prefixes, template_suffixes, template_ids_list)):
-            noise, template_length = denoising(
-                cls=cls,
-                encoder=encoder,
-                template_ids=template_ids,
-                prefix_ids=prefix_ids,
-                suffix_ids=suffix_ids,
-                mask_token_id=mask_token_id,
-                pad_token_id=pad_token_id,
-                total_length=total_length,
-                mask_num=mask_num,
-                device=device,
-                evaluation=False
-            )
-            noise_list.append(noise)
-            template_lengths.append(template_length)
-        
-        noise_anchor = noise_list[0]  # [max_pad_length, 2, hidden_size]
-        noise_positive = noise_list[1]
-        noise_negative = noise_list[2]
-        
-        # 计算每个样本的token长度（用于索引噪声）
-        # token_length = entire_length - template_length
-        # 其中entire_length是实际输入的总长度（包括句子）
-        entire_lengths = attention_mask.sum(dim=-1).view(batch_size, 3)  # [batch_size, 3]
-        template_length_anchor = template_lengths[0]
-        template_length_positive = template_lengths[1]
-        template_length_negative = template_lengths[2]
-        
-        token_lengths_anchor = entire_lengths[:, 0] - template_length_anchor  # [batch_size]
-        token_lengths_positive = entire_lengths[:, 1] - template_length_positive
-        token_lengths_negative = entire_lengths[:, 2] - template_length_negative
-        
-        # 应用去噪：从原始MASK表示中减去对应长度的噪声
-        # 第一个MASK使用索引0的噪声，第二个MASK使用索引1的噪声
-        h1_anchor_denoised = []
-        h2_anchor_denoised = []
-        h1_positive_denoised = []
-        h2_positive_denoised = []
-        h1_negative_denoised = []
-        h2_negative_denoised = []
-        
-        for i in range(batch_size):
-            # 锚句模板
-            tl_anchor = token_lengths_anchor[i].item()
-            tl_anchor = max(0, min(tl_anchor, noise_anchor.size(0) - 1))  # 确保索引有效
-            h1_anchor_denoised.append(h1_anchor[i] - noise_anchor[tl_anchor, 0, :])
-            h2_anchor_denoised.append(h2_anchor[i] - noise_anchor[tl_anchor, 1, :])
-            
-            # 正样本模板
-            tl_positive = token_lengths_positive[i].item()
-            tl_positive = max(0, min(tl_positive, noise_positive.size(0) - 1))
-            h1_positive_denoised.append(h1_positive[i] - noise_positive[tl_positive, 0, :])
-            h2_positive_denoised.append(h2_positive[i] - noise_positive[tl_positive, 1, :])
-            
-            # 负样本模板
-            tl_negative = token_lengths_negative[i].item()
-            tl_negative = max(0, min(tl_negative, noise_negative.size(0) - 1))
-            h1_negative_denoised.append(h1_negative[i] - noise_negative[tl_negative, 0, :])
-            h2_negative_denoised.append(h2_negative[i] - noise_negative[tl_negative, 1, :])
-        
-        h1_anchor = torch.stack(h1_anchor_denoised)
-        h2_anchor = torch.stack(h2_anchor_denoised)
-        h1_positive = torch.stack(h1_positive_denoised)
-        h2_positive = torch.stack(h2_positive_denoised)
-        h1_negative = torch.stack(h1_negative_denoised)
-        h2_negative = torch.stack(h2_negative_denoised)
-    
-    # 可选MLP处理
-    if cls.mlp is not None:
+    # 可选MLP处理（在去噪前应用，与 CoT-BERT 对齐）
+    if cls.mlp is not None and hasattr(cls.model_args, 'mask_embedding_sentence_org_mlp') and cls.model_args.mask_embedding_sentence_org_mlp:
         h1_anchor = cls.mlp(h1_anchor)
         h2_anchor = cls.mlp(h2_anchor)
         h1_positive = cls.mlp(h1_positive)
@@ -482,54 +366,82 @@ def cross_template_cot_forward(cls,
         h1_negative = cls.mlp(h1_negative)
         h2_negative = cls.mlp(h2_negative)
     
-    # 计算三个损失组件
-    eps = 1e-8
+    # Delta去噪处理
+    if cls.model_args.mask_embedding_sentence_delta:
+        # 使用模型属性中存储的模板信息
+        noise_anchor, template_length_anchor = denoising(
+            cls=cls,
+            encoder=encoder,
+            template=cls.mask_embedding_template,
+            bs=cls.bs,
+            es=cls.es,
+            device=input_ids.device,
+            evaluation=False
+        )
+        
+        noise_positive, template_length_positive = denoising(
+            cls=cls,
+            encoder=encoder,
+            template=cls.mask_embedding_template2,
+            bs=cls.bs2,
+            es=cls.es2,
+            device=input_ids.device,
+            evaluation=False
+        )
+        
+        noise_negative, template_length_negative = denoising(
+            cls=cls,
+            encoder=encoder,
+            template=cls.mask_embedding_template3,
+            bs=cls.bs3,
+            es=cls.es3,
+            device=input_ids.device,
+            evaluation=False
+        )
+        
+        # 计算每个样本的token长度（用于索引噪声）
+        # token_length = entire_length - template_length
+        entire_lengths = attention_mask.sum(dim=-1).view(batch_size, 3)  # [batch_size, 3]
+        
+        token_lengths_anchor = entire_lengths[:, 0] - template_length_anchor  # [batch_size]
+        token_lengths_positive = entire_lengths[:, 1] - template_length_positive
+        token_lengths_negative = entire_lengths[:, 2] - template_length_negative
+        
+        # 应用去噪：从原始MASK表示中减去对应长度的噪声
+        h1_anchor = h1_anchor - noise_anchor[token_lengths_anchor, 0, :]
+        h2_anchor = h2_anchor - noise_anchor[token_lengths_anchor, 1, :]
+        h1_positive = h1_positive - noise_positive[token_lengths_positive, 0, :]
+        h2_positive = h2_positive - noise_positive[token_lengths_positive, 1, :]
+        h1_negative = h1_negative - noise_negative[token_lengths_negative, 0, :]
+        h2_negative = h2_negative - noise_negative[token_lengths_negative, 1, :]
+    
+    # 可选MLP处理（在去噪后应用，如果未在去噪前应用）
+    # 与 CoT-BERT 对齐：如果 org_mlp=True，已在去噪前应用；否则在这里应用
+    if cls.mlp is not None:
+        if not (hasattr(cls.model_args, 'mask_embedding_sentence_org_mlp') and cls.model_args.mask_embedding_sentence_org_mlp):
+            h1_anchor = cls.mlp(h1_anchor)
+            h2_anchor = cls.mlp(h2_anchor)
+            h1_positive = cls.mlp(h1_positive)
+            h2_positive = cls.mlp(h2_positive)
+            h1_negative = cls.mlp(h1_negative)
+            h2_negative = cls.mlp(h2_negative)
+    
+    # 计算损失（与 CoT-BERT 对齐：只使用第二个 MASK）
     loss_fct = nn.CrossEntropyLoss()
     
     # 创建共享的 Similarity 实例（避免重复创建）
     similarity = Similarity(temp=cls.temperature)
     
-    # L1: 第一个 MASK 位置的 InfoNCE 损失（过程监督）
-    # 正样本对：(h1_anchor, h1_positive)
-    # 负样本：h1_negative 以及 batch 内其他样本的 h1_anchor, h1_positive, h1_negative
-    L1 = compute_infonce_loss(
-        anchor=h1_anchor,
-        positive=h1_positive,
-        negative=h1_negative,
-        similarity=similarity,
-        loss_fct=loss_fct
-    )
-    
-    # L2: 第二个 MASK 位置的 InfoNCE 损失（过程监督）
+    # 与 CoT-BERT 对齐：只使用第二个 MASK 位置的损失
     # 正样本对：(h2_anchor, h2_positive)
     # 负样本：h2_negative 以及 batch 内其他样本的 h2_anchor, h2_positive, h2_negative
-    L2 = compute_infonce_loss(
+    loss = compute_infonce_loss(
         anchor=h2_anchor,
         positive=h2_positive,
         negative=h2_negative,
         similarity=similarity,
         loss_fct=loss_fct
     )
-    
-    # L3: 约束项损失
-    # 增强第一阶段表示（h1_anchor, h1_positive）来推动第二阶段表示（h2_anchor, h2_positive）的优化
-    # L3 = compute_constraint_loss(
-    #     h1_anchor=h1_anchor,
-    #     h1_positive=h1_positive,
-    #     h2_anchor=h2_anchor,
-    #     h2_positive=h2_positive,
-    #     eps=eps
-    # )
-    
-    # 总损失：加权求和
-    # 注意：评估时只使用第二个 MASK (h2_anchor)，所以应该主要优化 L2
-    # 但 L1 作为过程监督也很重要，可以帮助模型学习更好的表示
-    # weight_1 = getattr(cls.model_args, 'process_supervision_weight_1', 0.0)  # 默认只使用 L2
-    # weight_2 = getattr(cls.model_args, 'process_supervision_weight_2', 1.0)  # 默认只使用 L2
-    # weight_3 = getattr(cls.model_args, 'constraint_weight', 0.0)  # 默认不使用约束损失
-
-    
-    loss = L1 + L2
     
     logits = h2_anchor  # 使用第二个MASK的锚句表示作为logits
     
@@ -626,56 +538,36 @@ def cross_template_cot_sentemb_forward(
     h_masks = torch.stack(h_masks_list)  # [batch_size * num_templates, 2, hidden_size]
 
     # 对于评估，只使用锚句模板（num_templates应为1）
+    # 与 CoT-BERT 对齐：只使用第二个 MASK
     h_anchor = h_masks[:, 1, :]  # 第二个MASK表示 [batch_size * num_templates, hidden_size]
 
-    # Delta去噪（仅对锚句模板）
+    # 可选MLP处理（在去噪前应用，与 CoT-BERT 对齐）
+    if cls.mlp is not None and hasattr(cls.model_args, 'mask_embedding_sentence_org_mlp') and cls.model_args.mask_embedding_sentence_org_mlp:
+        h_anchor = cls.mlp(h_anchor)
+
+    # Delta去噪处理（评估模式）
     if cls.model_args and getattr(cls.model_args, "mask_embedding_sentence_delta", False):
-        device = input_ids.device
-        pad_token_id = tokenizer.pad_token_id
-        total_length = input_ids.size(-1)
-        mask_num = 2
-
-        if anchor_template is None:
-            anchor_template = 'The sentence of "[X]" means [MASK], so it can be summarized as [MASK].'
-
-        parts = anchor_template.split("[X]")
-        prefix = parts[0]
-        suffix = parts[1] if len(parts) > 1 else ""
-
-        prefix_ids = tokenizer.encode(prefix, add_special_tokens=False)
-        suffix_ids = tokenizer.encode(suffix, add_special_tokens=False)
-        template_ids = [tokenizer.cls_token_id] + prefix_ids + suffix_ids + [tokenizer.sep_token_id]
-
         noise, template_length = denoising(
             cls=cls,
             encoder=encoder,
-            template_ids=template_ids,
-            prefix_ids=prefix_ids,
-            suffix_ids=suffix_ids,
-            mask_token_id=mask_token_id,
-            pad_token_id=pad_token_id,
-            total_length=total_length,
-            mask_num=mask_num,
-            device=device,
-            evaluation=True,
+            template=cls.mask_embedding_template,
+            bs=cls.bs,
+            es=cls.es,
+            device=input_ids.device,
+            evaluation=True
         )
 
         attention_mask_reshaped = attention_mask.view(batch_size, num_templates, -1)
         entire_lengths = attention_mask_reshaped.sum(dim=-1)  # [batch_size, num_templates]
         token_lengths_anchor = entire_lengths[:, 0] - template_length
 
-        h2_anchor_denoised = []
-        for i in range(batch_size):
-            tl_anchor = token_lengths_anchor[i].item()
-            tl_anchor = max(0, min(tl_anchor, noise.size(0) - 1))
-            # 第二个MASK使用索引1
-            h2_anchor_denoised.append(h_anchor[i] - noise[tl_anchor, 1, :])
+        # 应用去噪
+        h_anchor = h_anchor - noise[token_lengths_anchor, 1, :]
 
-        h_anchor = torch.stack(h2_anchor_denoised)
-
-    # 可选MLP
+    # 可选MLP处理（在去噪后应用，如果未在去噪前应用）
     if cls.mlp is not None:
-        h_anchor = cls.mlp(h_anchor)
+        if not (hasattr(cls.model_args, 'mask_embedding_sentence_org_mlp') and cls.model_args.mask_embedding_sentence_org_mlp):
+            h_anchor = cls.mlp(h_anchor)
 
     # 直接使用 h_anchor 作为 pooler_output（不归一化，与 models.py 保持一致）
     pooler_output = h_anchor

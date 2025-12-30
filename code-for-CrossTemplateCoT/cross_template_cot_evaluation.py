@@ -112,9 +112,13 @@ class ModelArguments:
         metadata={"help": "Whether to use template with [MASK] token"},
     )
     mask_embedding_sentence_template: str = field(
-        default='The sentence of "[X]" means [MASK], so it can be summarized as [MASK].',
+        default='*cls*_The_sentence_of_"*sent_0*"_means_*mask*_,_so_it_can_be_summarized_as_*mask*_._*sep+*',
         metadata={"help": "Anchor template"},
     )
+
+    # 内部存储解析后的模板部分（由 main 函数填充）
+    mask_embedding_sentence_bs: str = field(default="", metadata={"help": "Internal"})
+    mask_embedding_sentence_es: str = field(default="", metadata={"help": "Internal"})
     mask_embedding_sentence_different_template: str = field(
         default='The sentence ："[X]" means [MASK], so it can be summarized as [MASK].',
         metadata={"help": "Positive template"},
@@ -326,6 +330,25 @@ def main():
     model.tokenizer = tokenizer
     model.model_args = model_args
 
+    if model_args.mask_embedding_sentence:
+        model.mask_num = model_args.mask_num
+        model.pad_token_id = tokenizer.pad_token_id
+        model.mask_token_id = tokenizer.mask_token_id
+
+        # 解析并设置锚句模板属性
+        if model_args.mask_embedding_sentence_template != '': 
+            template = model_args.mask_embedding_sentence_template
+            assert ' ' not in template
+            template = template.replace('*mask*', tokenizer.mask_token)\
+                               .replace('*sep+*', '').replace('*cls*', '').replace('*sent_0*', ' ')
+            template = template.split(' ')
+            model_args.mask_embedding_sentence_bs = template[0].replace('_', ' ')
+            model_args.mask_embedding_sentence_es = template[1].replace('_', ' ')
+            
+            model.bs = tokenizer.encode(model_args.mask_embedding_sentence_bs, add_special_tokens=False)
+            model.es = tokenizer.encode(model_args.mask_embedding_sentence_es, add_special_tokens=False)
+            model.mask_embedding_template = tokenizer.encode(model_args.mask_embedding_sentence_bs + model_args.mask_embedding_sentence_es)
+
     # 设备选择：优先MPS，其次CUDA，最后CPU
     if torch.backends.mps.is_available():
         device = torch.device("mps")
@@ -365,32 +388,31 @@ def main():
             )
 
             if use_template:
-                anchor_template = getattr(
-                    model_args,
-                    "mask_embedding_sentence_template",
-                    'The sentence of "[X]" means [MASK], so it can be summarized as [MASK].',
-                )
+                # 获取解析后的模板部分
+                bs1 = tokenizer.encode(model_args.mask_embedding_sentence_bs)[:-1]
+                es1 = tokenizer.encode(model_args.mask_embedding_sentence_es)[1:]
 
-                templated_sentences = []
+                all_input_ids = []
                 for sent in sentences:
-                    parts = anchor_template.split("[X]")
-                    prefix = parts[0]
-                    suffix = parts[1] if len(parts) > 1 else ""
-                    templated_sentences.append(prefix + sent + suffix)
+                    # 基础编码（不加特殊 token）
+                    s_ids = tokenizer.encode(sent, add_special_tokens=False)[: training_args.max_seq_length]
+                    all_input_ids.append(bs1 + s_ids + es1)
 
-                encoded = tokenizer.batch_encode_plus(
-                    templated_sentences,
-                    return_tensors="pt",
-                    padding=True,
-                )
+                # 计算最大长度用于填充
+                max_len = max(len(ids) for ids in all_input_ids)
 
-                batch_size = len(sentences)
-                seq_len = encoded["input_ids"].size(1)
+                # 填充并构建 attention mask
+                padded_input_ids = []
+                attention_masks = []
+                for ids in all_input_ids:
+                    padding_len = max_len - len(ids)
+                    padded_input_ids.append(ids + [tokenizer.pad_token_id] * padding_len)
+                    attention_masks.append([1] * len(ids) + [0] * padding_len)
 
-                batch_input = {}
-                for k, tensor in encoded.items():
-                    tensor = tensor.to(device)
-                    batch_input[k] = tensor.view(batch_size, 1, seq_len)
+                batch_input = {
+                    "input_ids": torch.tensor(padded_input_ids).to(device).unsqueeze(1),
+                    "attention_mask": torch.tensor(attention_masks).to(device).unsqueeze(1),
+                }
             else:
                 encoded = tokenizer.batch_encode_plus(
                     sentences,

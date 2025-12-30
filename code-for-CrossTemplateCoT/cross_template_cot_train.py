@@ -117,17 +117,28 @@ class ModelArguments:
         metadata={"help": "Number of [MASK] tokens in templates (default: 2)"},
     )
     mask_embedding_sentence_template: str = field(
-        default='The sentence of "[X]" means [MASK], so it can be summarized as [MASK].',
+        default='*cls*_The_sentence_of_"*sent_0*"_means_*mask*_,_so_it_can_be_summarized_as_*mask*_._*sep+*',
         metadata={"help": "Anchor template"},
     )
     mask_embedding_sentence_different_template: str = field(
-        default='The sentence : "[X]" means [MASK], so it can be summarized as [MASK].',
+        default='*cls*_The_sentence_:_"*sent_0*"_means_*mask*_,_so_it_can_be_summarized_as_*mask*_._*sep+*',
         metadata={"help": "Positive template"},
     )
     mask_embedding_sentence_negative_template: str = field(
-        default='The sentence : "[X]" does not mean [MASK], so it cannot be summarized as [MASK].',
+        default='*cls*_The_sentence_:_"*sent_0*"_does_not_mean_*mask*_,_so_it_cannot_be_summarized_as_*mask*_._*sep+*',
         metadata={"help": "Negative template"},
     )
+
+    # 内部存储解析后的模板部分（由 main 函数填充）
+    mask_embedding_sentence_bs: str = field(default="", metadata={"help": "Internal"})
+    mask_embedding_sentence_es: str = field(default="", metadata={"help": "Internal"})
+    mask_embedding_sentence_bs2: str = field(default="", metadata={"help": "Internal"})
+    mask_embedding_sentence_es2: str = field(default="", metadata={"help": "Internal"})
+    mask_embedding_sentence_bs3: str = field(default="", metadata={"help": "Internal"})
+    mask_embedding_sentence_es3: str = field(default="", metadata={"help": "Internal"})
+    mask_embedding_sentence_different_negative_template: str = field(default="", metadata={"help": "Internal"})
+    mask_embedding_sentence_bs4: str = field(default="", metadata={"help": "Internal"})
+    mask_embedding_sentence_es4: str = field(default="", metadata={"help": "Internal"})
 
     # 去噪和MLP设置
     mask_embedding_sentence_delta: bool = field(
@@ -299,6 +310,7 @@ def prepare_features(examples, model_args: ModelArguments, data_args: DataTraini
     """
     Cross-Template CoT 模板数据准备函数
     使用3个模板（锚句、正样本、负样本）为每个句子生成输入。
+    完全复用 CoT-BERT 的模板处理逻辑。
     """
     total = len(examples["text"])
 
@@ -310,76 +322,84 @@ def prepare_features(examples, model_args: ModelArguments, data_args: DataTraini
     sentences = examples["text"]
 
     if model_args.mask_embedding_sentence:
-        templates = [
-            model_args.mask_embedding_sentence_template,
-            model_args.mask_embedding_sentence_different_template,
-            model_args.mask_embedding_sentence_negative_template,
-        ]  # 顺序: anchor, positive, negative
+        # 预编码模板部分
+        # [:-1] 移除 [SEP], [1:] 移除 [CLS]
+        bs1 = tokenizer.encode(model_args.mask_embedding_sentence_bs)[:-1]
+        es1 = tokenizer.encode(model_args.mask_embedding_sentence_es)[1:]
 
-        prefixes = []
-        suffixes = []
-        for template in templates:
-            parts = template.split("[X]")
-            prefix = parts[0]
-            suffix = parts[1] if len(parts) > 1 else ""
-            prefixes.append(tokenizer.encode(prefix, add_special_tokens=False))
-            suffixes.append(tokenizer.encode(suffix, add_special_tokens=False))
+        if model_args.mask_embedding_sentence_different_template != "":
+            bs2 = tokenizer.encode(model_args.mask_embedding_sentence_bs2)[:-1]
+            es2 = tokenizer.encode(model_args.mask_embedding_sentence_es2)[1:]
+        else:
+            bs2, es2 = bs1, es1
 
-        all_sequences: List[List[List[int]]] = [[] for _ in range(len(templates))]
+        if model_args.mask_embedding_sentence_negative_template != "":
+            bs3 = tokenizer.encode(model_args.mask_embedding_sentence_bs3)[:-1]
+            es3 = tokenizer.encode(model_args.mask_embedding_sentence_es3)[1:]
+        else:
+            bs3, es3 = bs1, es1
 
+        sent_features = {"input_ids": [], "attention_mask": []}
+
+        # 为每个样本生成3个视图（anchor, positive, negative）
+        # 注意：这里我们为每个样本生成 3 * total 个输入，然后重新组织
+        all_input_ids = []
+        
+        # 处理所有句子
         for sent in sentences:
-            sent_ids = tokenizer.encode(sent, add_special_tokens=False)[: data_args.max_seq_length]
-            for view_idx, _ in enumerate(templates):
-                seq = (
-                    [tokenizer.cls_token_id]
-                    + prefixes[view_idx]
-                    + sent_ids
-                    + suffixes[view_idx]
-                    + [tokenizer.sep_token_id]
-                )
-                all_sequences[view_idx].append(seq)
+            # 基础编码（不加特殊 token）
+            s_ids = tokenizer.encode(sent, add_special_tokens=False)[: data_args.max_seq_length]
+            
+            # 1. Anchor 视图
+            all_input_ids.append(bs1 + s_ids + es1)
+            # 2. Positive 视图
+            all_input_ids.append(bs2 + s_ids + es2)
+            # 3. Negative 视图
+            all_input_ids.append(bs3 + s_ids + es3)
 
-        max_length = max(len(seq) for view in all_sequences for seq in view)
+        # 计算最大长度用于填充
+        max_len = max(len(ids) for ids in all_input_ids)
 
-        sent_features: Dict[str, List] = {"input_ids": [], "attention_mask": []}
-        for sample_idx in range(total):
-            sample_views_ids = []
-            sample_views_mask = []
-            for view_idx in range(len(templates)):
-                seq = all_sequences[view_idx][sample_idx]
-                pad_len = max_length - len(seq)
-                sample_views_ids.append(seq + [tokenizer.pad_token_id] * pad_len)
-                sample_views_mask.append([1] * len(seq) + [0] * pad_len)
-            sent_features["input_ids"].append(sample_views_ids)
-            sent_features["attention_mask"].append(sample_views_mask)
+        # 填充并构建 attention mask
+        padded_input_ids = []
+        attention_masks = []
+        for ids in all_input_ids:
+            padding_len = max_len - len(ids)
+            padded_input_ids.append(ids + [tokenizer.pad_token_id] * padding_len)
+            attention_masks.append([1] * len(ids) + [0] * padding_len)
+
+        # 重新组织为 [total, 3, seq_len]
+        for i in range(total):
+            sent_features["input_ids"].append([
+                padded_input_ids[i * 3],
+                padded_input_ids[i * 3 + 1],
+                padded_input_ids[i * 3 + 2]
+            ])
+            sent_features["attention_mask"].append([
+                attention_masks[i * 3],
+                attention_masks[i * 3 + 1],
+                attention_masks[i * 3 + 2]
+            ])
     else:
+        # 无模板模式（SimCSE 风格）
         sent_features = {"input_ids": [], "attention_mask": []}
         for sent in sentences:
-            sent_ids = tokenizer.encode(sent, add_special_tokens=False)[: data_args.max_seq_length]
-            seq = [tokenizer.cls_token_id] + sent_ids + [tokenizer.sep_token_id]
-            # anchor / positive / negative 共用同一句（无模板）
+            s_ids = tokenizer.encode(sent, add_special_tokens=False)[: data_args.max_seq_length]
+            seq = [tokenizer.cls_token_id] + s_ids + [tokenizer.sep_token_id]
             sent_features["input_ids"].append([seq, seq, seq])
 
-        max_length = max(len(seq) for sample in sent_features["input_ids"] for seq in sample)
-        padded_ids = []
-        padded_mask = []
-        for sample in sent_features["input_ids"]:
+        max_len = max(len(seq) for sample in sent_features["input_ids"] for seq in sample)
+        for i in range(total):
             sample_ids = []
             sample_mask = []
-            for seq in sample:
-                pad_len = max_length - len(seq)
-                sample_ids.append(seq + [tokenizer.pad_token_id] * pad_len)
-                sample_mask.append([1] * len(seq) + [0] * pad_len)
-            padded_ids.append(sample_ids)
-            padded_mask.append(sample_mask)
-        sent_features["input_ids"] = padded_ids
-        sent_features["attention_mask"] = padded_mask
+            for seq in sent_features["input_ids"][i]:
+                padding_len = max_len - len(seq)
+                sample_ids.append(seq + [tokenizer.pad_token_id] * padding_len)
+                sample_mask.append([1] * len(seq) + [0] * padding_len)
+            sent_features["input_ids"][i] = sample_ids
+            sent_features["attention_mask"].append(sample_mask)
 
-    features: Dict[str, List] = {}
-    for key in sent_features:
-        features[key] = [sent_features[key][i] for i in range(total)]
-
-    return features
+    return sent_features
 
 
 def main():
@@ -486,6 +506,56 @@ def main():
             raise NotImplementedError("Only BERT models are supported for CrossTemplateCoT")
     else:
         raise NotImplementedError
+
+    # 设置模型属性
+    model.resize_token_embeddings(len(tokenizer))
+
+    if model_args.mask_embedding_sentence:
+        model.mask_num = model_args.mask_num
+        model.pad_token_id = tokenizer.pad_token_id
+        model.mask_token_id = tokenizer.mask_token_id
+
+        # 解析并设置锚句模板属性
+        if model_args.mask_embedding_sentence_template != '': 
+            template = model_args.mask_embedding_sentence_template
+            assert ' ' not in template
+            template = template.replace('*mask*', tokenizer.mask_token)\
+                               .replace('*sep+*', '').replace('*cls*', '').replace('*sent_0*', ' ')
+            template = template.split(' ')
+            model_args.mask_embedding_sentence_bs = template[0].replace('_', ' ')
+            model_args.mask_embedding_sentence_es = template[1].replace('_', ' ')
+            
+            model.bs = tokenizer.encode(model_args.mask_embedding_sentence_bs, add_special_tokens=False)
+            model.es = tokenizer.encode(model_args.mask_embedding_sentence_es, add_special_tokens=False)
+            model.mask_embedding_template = tokenizer.encode(model_args.mask_embedding_sentence_bs + model_args.mask_embedding_sentence_es)
+
+        # 解析并设置正样本模板属性
+        if model_args.mask_embedding_sentence_different_template != '':
+            template = model_args.mask_embedding_sentence_different_template
+            assert ' ' not in template
+            template = template.replace('*mask*', tokenizer.mask_token)\
+                               .replace('*sep+*', '').replace('*cls*', '').replace('*sent_0*', ' ')
+            template = template.split(' ')
+            model_args.mask_embedding_sentence_bs2 = template[0].replace('_', ' ')
+            model_args.mask_embedding_sentence_es2 = template[1].replace('_', ' ')
+            
+            model.bs2 = tokenizer.encode(model_args.mask_embedding_sentence_bs2, add_special_tokens=False)
+            model.es2 = tokenizer.encode(model_args.mask_embedding_sentence_es2, add_special_tokens=False)
+            model.mask_embedding_template2 = tokenizer.encode(model_args.mask_embedding_sentence_bs2 + model_args.mask_embedding_sentence_es2)
+        
+        # 解析并设置负样本模板属性
+        if model_args.mask_embedding_sentence_negative_template != '':
+            template = model_args.mask_embedding_sentence_negative_template
+            assert ' ' not in template
+            template = template.replace('*mask*', tokenizer.mask_token)\
+                               .replace('*sep+*', '').replace('*cls*', '').replace('*sent_0*', ' ')
+            template = template.split(' ')
+            model_args.mask_embedding_sentence_bs3 = template[0].replace('_', ' ')
+            model_args.mask_embedding_sentence_es3 = template[1].replace('_', ' ')
+            
+            model.bs3 = tokenizer.encode(model_args.mask_embedding_sentence_bs3, add_special_tokens=False)
+            model.es3 = tokenizer.encode(model_args.mask_embedding_sentence_es3, add_special_tokens=False)
+            model.mask_embedding_template3 = tokenizer.encode(model_args.mask_embedding_sentence_bs3 + model_args.mask_embedding_sentence_es3)
 
     # 准备特征
     column_names = datasets["train"].column_names
