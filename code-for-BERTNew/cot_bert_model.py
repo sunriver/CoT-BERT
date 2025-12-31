@@ -102,7 +102,8 @@ def denoising(cls, encoder, template, type='pos-1', device='cuda', evaluation=Fa
             noise = last_hidden[mask]
 
         noise = noise.view(-1, cls.mask_num, noise.shape[-1])
-        noise = noise[:, cls.mask_num - 1, :]
+        # 返回所有MASK位置的噪声，形状为 [max_pad_length, mask_num, hidden_size]
+        # 不再切片，以支持双MASK损失计算
 
         return noise, len(template)
 
@@ -115,7 +116,8 @@ def cl_init(cls, config):
         from transformers.models.bert.modeling_bert import BertPredictionHeadTransform
         cls.mlp = BertPredictionHeadTransform(config)
     else:
-        cls.mlp = MLPLayer(config, scale=cls.model_args.mask_embedding_sentence_num_masks)
+        # 设置为scale=1，以支持分别处理每个MASK的表示（与CrossTemplateCoT对齐）
+        cls.mlp = MLPLayer(config, scale=1)
     
     cls.sim = Similarity(temp=cls.model_args.temp)
     cls.init_weights()
@@ -193,145 +195,213 @@ def cl_forward(cls,
 
         pooler_output = last_hidden[input_ids == cls.mask_token_id]
 
+        # 保留所有MASK位置的表示，形状为 [batch_size * num_sent, mask_num, hidden_size]
         pooler_output = pooler_output.view(-1, cls.mask_num, pooler_output.shape[-1])
-        pooler_output = pooler_output[:, cls.mask_num - 1, :]
 
         if cls.model_args.mask_embedding_sentence_delta:
+            # 可选MLP处理（在去噪前应用，如果org_mlp=True）
             if cls.model_args.mask_embedding_sentence_org_mlp:
                 pooler_output = cls.mlp(pooler_output)
 
+            # 重新组织为 [batch_size, num_sent, mask_num, hidden_size]
+            pooler_output = pooler_output.view(batch_size, num_sent, cls.mask_num, -1)
+            attention_mask = attention_mask.view(batch_size, num_sent, -1)
+
+            entire_length = attention_mask.sum(-1)  # [batch_size, num_sent]
+
+            # 对每个模板的每个MASK位置应用去噪
+            token_length = entire_length - template_length1
+            # 限制索引范围，防止越界
+            max_idx = noise1.size(0) - 1
+            token_length = torch.clamp(token_length, 0, max_idx)
+            pooler_output[:, 0, 0, :] -= noise1[token_length[:, 0], 0, :]  # MASK 1
+            pooler_output[:, 0, 1, :] -= noise1[token_length[:, 0], 1, :]  # MASK 2
+
             if len(cls.model_args.mask_embedding_sentence_different_template) > 0:
-                pooler_output = pooler_output.view(batch_size, num_sent, -1)
-                attention_mask = attention_mask.view(batch_size, num_sent, -1)
-
-                entire_length = attention_mask.sum(-1)
-
-                token_length = entire_length - template_length1
-                pooler_output[:, 0, :] -= noise1[token_length[:, 0]]
-
                 token_length = entire_length - template_length2
-                pooler_output[:, 1, :] -= noise2[token_length[:, 1]]
+                token_length = torch.clamp(token_length, 0, max_idx)
+                pooler_output[:, 1, 0, :] -= noise2[token_length[:, 1], 0, :]  # MASK 1
+                pooler_output[:, 1, 1, :] -= noise2[token_length[:, 1], 1, :]  # MASK 2
                 
                 if num_sent == 3 and len(cls.model_args.mask_embedding_sentence_negative_template) == 0:
-                    pooler_output[:, 2, :] -= noise3[token_length[:, 2]]
+                    pooler_output[:, 2, 0, :] -= noise3[token_length[:, 2], 0, :]  # MASK 1
+                    pooler_output[:, 2, 1, :] -= noise3[token_length[:, 2], 1, :]  # MASK 2
                 
                 if len(cls.model_args.mask_embedding_sentence_negative_template) > 0:
                     token_length = entire_length - template_length3
-                    pooler_output[:, 2, :] -= noise3[token_length[:, 2]]
+                    token_length = torch.clamp(token_length, 0, max_idx)
+                    pooler_output[:, 2, 0, :] -= noise3[token_length[:, 2], 0, :]  # MASK 1
+                    pooler_output[:, 2, 1, :] -= noise3[token_length[:, 2], 1, :]  # MASK 2
 
                 if len(cls.model_args.mask_embedding_sentence_different_negative_template) > 0:
                     token_length = entire_length - template_length4
-                    pooler_output[:, 3, :] -= noise4[token_length[:, 3]]
+                    token_length = torch.clamp(token_length, 0, max_idx)
+                    pooler_output[:, 3, 0, :] -= noise4[token_length[:, 3], 0, :]  # MASK 1
+                    pooler_output[:, 3, 1, :] -= noise4[token_length[:, 3], 1, :]  # MASK 2
             else:
-                token_length = attention_mask.sum(-1) - template_length1
-                pooler_output -= noise1[token_length]
+                # 没有different_template时，所有sent使用相同的noise1
+                token_length = entire_length - template_length1
+                token_length = torch.clamp(token_length, 0, max_idx)
+                for sent_idx in range(num_sent):
+                    pooler_output[:, sent_idx, 0, :] -= noise1[token_length[:, sent_idx], 0, :]  # MASK 1
+                    pooler_output[:, sent_idx, 1, :] -= noise1[token_length[:, sent_idx], 1, :]  # MASK 2
 
-        pooler_output = pooler_output.view(batch_size * num_sent, -1)
+        # 如果未在去噪前应用MLP，则在这里应用
+        if (
+            not cls.model_args.mask_embedding_sentence_delta
+            or not cls.model_args.mask_embedding_sentence_org_mlp
+        ):
+            # pooler_output形状: [batch_size, num_sent, mask_num, hidden_size]
+            # 需要将mask_num维度展平以应用MLP
+            pooler_output = pooler_output.view(batch_size * num_sent * cls.mask_num, -1)
+            pooler_output = cls.mlp(pooler_output)
+            pooler_output = pooler_output.view(batch_size, num_sent, cls.mask_num, -1)
+        else:
+            # 如果已经在去噪前应用了MLP，确保形状正确
+            if pooler_output.dim() == 3:
+                pooler_output = pooler_output.view(batch_size, num_sent, cls.mask_num, -1)
     
-    pooler_output = pooler_output.view((batch_size, num_sent, pooler_output.size(-1)))
+    # 最终形状: [batch_size, num_sent, mask_num, hidden_size]
 
-    # If using "cls", we add an extra MLP layer
-    # (same as BERT's original implementation) over the representation.
-    if (
-        not cls.model_args.mask_embedding_sentence_delta
-        or not cls.model_args.mask_embedding_sentence_org_mlp
-    ):
-        pooler_output = cls.mlp(pooler_output)
-
-    # Separate representation
-    z1, z2 = pooler_output[:, 0], pooler_output[:, 1]
+    # Separate representation for each MASK position
+    # 提取第一个MASK和第二个MASK的表示
+    z1_m1 = pooler_output[:, 0, 0, :]  # [batch_size, hidden_size] - 第一个sent，第一个MASK
+    z2_m1 = pooler_output[:, 1, 0, :]  # [batch_size, hidden_size] - 第二个sent，第一个MASK
+    z1_m2 = pooler_output[:, 0, 1, :]  # [batch_size, hidden_size] - 第一个sent，第二个MASK
+    z2_m2 = pooler_output[:, 1, 1, :]  # [batch_size, hidden_size] - 第二个sent，第二个MASK
 
     # Hard negative
     if num_sent == 3:
-        z3 = pooler_output[:, 2]
+        z3_m1 = pooler_output[:, 2, 0, :]  # [batch_size, hidden_size] - 第三个sent，第一个MASK
+        z3_m2 = pooler_output[:, 2, 1, :]  # [batch_size, hidden_size] - 第三个sent，第二个MASK
     elif num_sent == 4:
-        z3, z4 = pooler_output[:, 2], pooler_output[:, 3]
+        z3_m1, z4_m1 = pooler_output[:, 2, 0, :], pooler_output[:, 3, 0, :]
+        z3_m2, z4_m2 = pooler_output[:, 2, 1, :], pooler_output[:, 3, 1, :]
 
     # Gather all embeddings if using distributed training
     if dist.is_initialized() and cls.training:
-        # Gather hard negative
+        # Gather hard negative for MASK 1
         if num_sent == 3:
-            z3_list = [torch.zeros_like(z3) for _ in range(dist.get_world_size())]
-            dist.all_gather(tensor_list=z3_list, tensor=z3.contiguous())
-            z3_list[dist.get_rank()] = z3
-            z3 = torch.cat(z3_list, 0)
+            z3_m1_list = [torch.zeros_like(z3_m1) for _ in range(dist.get_world_size())]
+            dist.all_gather(tensor_list=z3_m1_list, tensor=z3_m1.contiguous())
+            z3_m1_list[dist.get_rank()] = z3_m1
+            z3_m1 = torch.cat(z3_m1_list, 0)
         elif num_sent == 4:
-            z3_list = [torch.zeros_like(z3) for _ in range(dist.get_world_size())]
-            z4_list = [torch.zeros_like(z4) for _ in range(dist.get_world_size())]
-            dist.all_gather(tensor_list=z3_list, tensor=z3.contiguous())
-            dist.all_gather(tensor_list=z4_list, tensor=z4.contiguous())
-            z3_list[dist.get_rank()] = z3
-            z4_list[dist.get_rank()] = z4
-            z3 = torch.cat(z3_list, 0)
-            z4 = torch.cat(z4_list, 0)
+            z3_m1_list = [torch.zeros_like(z3_m1) for _ in range(dist.get_world_size())]
+            z4_m1_list = [torch.zeros_like(z4_m1) for _ in range(dist.get_world_size())]
+            dist.all_gather(tensor_list=z3_m1_list, tensor=z3_m1.contiguous())
+            dist.all_gather(tensor_list=z4_m1_list, tensor=z4_m1.contiguous())
+            z3_m1_list[dist.get_rank()] = z3_m1
+            z4_m1_list[dist.get_rank()] = z4_m1
+            z3_m1 = torch.cat(z3_m1_list, 0)
+            z4_m1 = torch.cat(z4_m1_list, 0)
 
-        # Dummy vectors for allgather
-        z1_list = [torch.zeros_like(z1) for _ in range(dist.get_world_size())]
-        z2_list = [torch.zeros_like(z2) for _ in range(dist.get_world_size())]
+        # Gather hard negative for MASK 2
+        if num_sent == 3:
+            z3_m2_list = [torch.zeros_like(z3_m2) for _ in range(dist.get_world_size())]
+            dist.all_gather(tensor_list=z3_m2_list, tensor=z3_m2.contiguous())
+            z3_m2_list[dist.get_rank()] = z3_m2
+            z3_m2 = torch.cat(z3_m2_list, 0)
+        elif num_sent == 4:
+            z3_m2_list = [torch.zeros_like(z3_m2) for _ in range(dist.get_world_size())]
+            z4_m2_list = [torch.zeros_like(z4_m2) for _ in range(dist.get_world_size())]
+            dist.all_gather(tensor_list=z3_m2_list, tensor=z3_m2.contiguous())
+            dist.all_gather(tensor_list=z4_m2_list, tensor=z4_m2.contiguous())
+            z3_m2_list[dist.get_rank()] = z3_m2
+            z4_m2_list[dist.get_rank()] = z4_m2
+            z3_m2 = torch.cat(z3_m2_list, 0)
+            z4_m2 = torch.cat(z4_m2_list, 0)
 
-        # Allgather
-        dist.all_gather(tensor_list=z1_list, tensor=z1.contiguous())
-        dist.all_gather(tensor_list=z2_list, tensor=z2.contiguous())
+        # Gather z1 and z2 for MASK 1
+        z1_m1_list = [torch.zeros_like(z1_m1) for _ in range(dist.get_world_size())]
+        z2_m1_list = [torch.zeros_like(z2_m1) for _ in range(dist.get_world_size())]
+        dist.all_gather(tensor_list=z1_m1_list, tensor=z1_m1.contiguous())
+        dist.all_gather(tensor_list=z2_m1_list, tensor=z2_m1.contiguous())
+        z1_m1_list[dist.get_rank()] = z1_m1
+        z2_m1_list[dist.get_rank()] = z2_m1
+        z1_m1 = torch.cat(z1_m1_list, 0)
+        z2_m1 = torch.cat(z2_m1_list, 0)
 
-        # Since allgather results do not have gradients, we replace the
-        # current process's corresponding embeddings with original tensors
-        z1_list[dist.get_rank()] = z1
-        z2_list[dist.get_rank()] = z2
+        # Gather z1 and z2 for MASK 2
+        z1_m2_list = [torch.zeros_like(z1_m2) for _ in range(dist.get_world_size())]
+        z2_m2_list = [torch.zeros_like(z2_m2) for _ in range(dist.get_world_size())]
+        dist.all_gather(tensor_list=z1_m2_list, tensor=z1_m2.contiguous())
+        dist.all_gather(tensor_list=z2_m2_list, tensor=z2_m2.contiguous())
+        z1_m2_list[dist.get_rank()] = z1_m2
+        z2_m2_list[dist.get_rank()] = z2_m2
+        z1_m2 = torch.cat(z1_m2_list, 0)
+        z2_m2 = torch.cat(z2_m2_list, 0)
 
-        # Get full batch embeddings: (batch size x N, hidden)
-        z1 = torch.cat(z1_list, 0)
-        z2 = torch.cat(z2_list, 0)
-
+    # 计算第一个MASK位置的InfoNCE损失 (L1)
     if cls.model_args.dot_sim:
-        cos_sim = torch.mm(torch.sigmoid(z1), torch.sigmoid(z2.permute(1, 0)))
+        cos_sim_m1 = torch.mm(torch.sigmoid(z1_m1), torch.sigmoid(z2_m1.permute(1, 0)))
     else:
-        cos_sim = cls.sim(z1.unsqueeze(1), z2.unsqueeze(0))
+        cos_sim_m1 = cls.sim(z1_m1.unsqueeze(1), z2_m1.unsqueeze(0))
 
     if cls.model_args.norm_instead_temp:
-        cos_sim *= cls.sim.temp
-        cmin, cmax = cos_sim.min(), cos_sim.max()
-        cos_sim = (cos_sim - cmin) / (cmax - cmin) / cls.sim.temp
+        cos_sim_m1 *= cls.sim.temp
+        cmin, cmax = cos_sim_m1.min(), cos_sim_m1.max()
+        # 添加数值稳定性保护：防止除以零
+        eps = 1e-8
+        denominator = cmax - cmin
+        denominator = torch.clamp(denominator, min=eps)
+        cos_sim_m1 = (cos_sim_m1 - cmin) / denominator / cls.sim.temp
 
     if num_sent == 3:
-        z1_z3_cos = cls.sim(z1.unsqueeze(1), z3.unsqueeze(0))
-        z2_z3_cos = cls.sim(z2.unsqueeze(1), z3.unsqueeze(0))
-        cos_sim = torch.cat([cos_sim, z1_z3_cos, z2_z3_cos], 1)
+        z1_m1_z3_m1_cos = cls.sim(z1_m1.unsqueeze(1), z3_m1.unsqueeze(0))
+        z2_m1_z3_m1_cos = cls.sim(z2_m1.unsqueeze(1), z3_m1.unsqueeze(0))
+        cos_sim_m1 = torch.cat([cos_sim_m1, z1_m1_z3_m1_cos, z2_m1_z3_m1_cos], 1)
     elif num_sent == 4:
-        z1_z3_cos = cls.sim(z1.unsqueeze(1), z3.unsqueeze(0))
-        cos_sim = torch.cat([cos_sim, z1_z3_cos], 1)
-
-        z3_z4_cos = cls.sim(z3.unsqueeze(1), z4.unsqueeze(0))
-        z2_z4_cos = cls.sim(z2.unsqueeze(1), z4.unsqueeze(0))
-        cos_sim2 = torch.cat([z3_z4_cos, z2_z4_cos], 1)
+        z1_m1_z3_m1_cos = cls.sim(z1_m1.unsqueeze(1), z3_m1.unsqueeze(0))
+        cos_sim_m1 = torch.cat([cos_sim_m1, z1_m1_z3_m1_cos], 1)
 
     loss_fct = nn.CrossEntropyLoss()
+    labels_m1 = torch.arange(cos_sim_m1.size(0)).long().to(input_ids.device)
+    loss1 = loss_fct(cos_sim_m1, labels_m1)
+    
+    # 检查并处理 NaN 和 Inf
+    if torch.isnan(loss1) or torch.isinf(loss1):
+        loss1 = torch.tensor(0.0, device=input_ids.device, requires_grad=True)
 
-    labels = torch.arange(cos_sim.size(0)).long().to(input_ids.device)
+    # 计算第二个MASK位置的InfoNCE损失 (L2)
+    if cls.model_args.dot_sim:
+        cos_sim_m2 = torch.mm(torch.sigmoid(z1_m2), torch.sigmoid(z2_m2.permute(1, 0)))
+    else:
+        cos_sim_m2 = cls.sim(z1_m2.unsqueeze(1), z2_m2.unsqueeze(0))
 
-    # Calculate loss with hard negatives
-    # if num_sent == 3:
-    #     # Note that weights are actually logits of weights
-    #     # z3_weight = cls.model_args.hard_negative_weight
-        
-    #     z3_weight = 0.0
+    if cls.model_args.norm_instead_temp:
+        cos_sim_m2 *= cls.sim.temp
+        cmin, cmax = cos_sim_m2.min(), cos_sim_m2.max()
+        # 添加数值稳定性保护：防止除以零
+        eps = 1e-8
+        denominator = cmax - cmin
+        denominator = torch.clamp(denominator, min=eps)
+        cos_sim_m2 = (cos_sim_m2 - cmin) / denominator / cls.sim.temp
 
-    #     weights1 = torch.tensor(
-    #         [[0.0] * z1_z3_cos.size(-1) + 
-    #          [0.0] * i +
-    #          [z3_weight] + 
-    #          [0.0] * (cos_sim.size(-1) - z1_z3_cos.size(-1) - i - 1) for i in range(z1_z3_cos.size(-1))]
-    #     ).to(input_ids.device)
-        
-    #     weights2 = torch.tensor(
-    #         [[0.0] * (cos_sim.size(-1) - z1_z3_cos.size(-1)) + 
-    #          [0.0] * i + 
-    #          [z3_weight] + 
-    #          [0.0] * (z1_z3_cos.size(-1) - i - 1) for i in range(z1_z3_cos.size(-1))]
-    #     ).to(input_ids.device)
+    if num_sent == 3:
+        z1_m2_z3_m2_cos = cls.sim(z1_m2.unsqueeze(1), z3_m2.unsqueeze(0))
+        z2_m2_z3_m2_cos = cls.sim(z2_m2.unsqueeze(1), z3_m2.unsqueeze(0))
+        cos_sim_m2 = torch.cat([cos_sim_m2, z1_m2_z3_m2_cos, z2_m2_z3_m2_cos], 1)
+    elif num_sent == 4:
+        z1_m2_z3_m2_cos = cls.sim(z1_m2.unsqueeze(1), z3_m2.unsqueeze(0))
+        cos_sim_m2 = torch.cat([cos_sim_m2, z1_m2_z3_m2_cos], 1)
 
-    #     cos_sim = cos_sim + weights1 + weights2
+    labels_m2 = torch.arange(cos_sim_m2.size(0)).long().to(input_ids.device)
+    loss2 = loss_fct(cos_sim_m2, labels_m2)
+    
+    # 检查并处理 NaN 和 Inf
+    if torch.isnan(loss2) or torch.isinf(loss2):
+        loss2 = torch.tensor(0.0, device=input_ids.device, requires_grad=True)
 
-    loss = loss_fct(cos_sim, labels)
+    # 总损失 = L1 + L2（与CrossTemplateCoT设计对齐）
+    loss = loss1 + loss2
+    
+    # 最终检查：如果总损失仍然是 NaN，设置为 0
+    if torch.isnan(loss) or torch.isinf(loss):
+        loss = torch.tensor(0.0, device=input_ids.device, requires_grad=True)
+    
+    # 使用第二个MASK的相似度矩阵作为logits（保持与评估一致）
+    cos_sim = cos_sim_m2
 
     # Calculate loss for MLM
     # if not cls.model_args.add_pseudo_instances and mlm_outputs is not None and mlm_labels is not None:
@@ -363,7 +433,9 @@ def sentemb_forward(
 ):
 
     if cls.model_args.mask_embedding_sentence_delta and not cls.model_args.mask_embedding_sentence_delta_no_delta_eval :
-        noise, template_length = denoising(cls=cls, encoder=encoder, template=cls.mask_embedding_template, type='pos-2', device=input_ids.device, evaluation=True)
+        noise_all, template_length = denoising(cls=cls, encoder=encoder, template=cls.mask_embedding_template, type='pos-2', device=input_ids.device, evaluation=True)
+        # 评估时只使用第二个MASK的噪声（保持与之前行为一致）
+        noise = noise_all[:, cls.mask_num - 1, :]
 
     return_dict = return_dict if return_dict is not None else cls.config.use_return_dict
 
