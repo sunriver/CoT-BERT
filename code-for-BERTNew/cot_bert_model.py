@@ -33,6 +33,51 @@ class Similarity(nn.Module):
     def forward(self, x, y):
         return self.cos(x, y) / self.temp
 
+def compute_constraint_loss(h1_anchor, h1_positive, h2_anchor, h2_positive, eps=1e-8):
+    """
+    计算约束项损失 L3
+    
+    L3 = (||(h2_positive - h1_anchor)|| + ||(h2_anchor - h1_positive)||) 
+         / (||h2_anchor|| + ||h2_positive|| + ε)
+    
+    该损失用于增强第一阶段表示（h1_anchor, h1_positive）来推动
+    第二阶段表示（h2_anchor, h2_positive）的优化。
+    
+    Args:
+        h1_anchor: [batch_size, hidden_size] 第一阶段锚句表示
+        h1_positive: [batch_size, hidden_size] 第一阶段正样本表示
+        h2_anchor: [batch_size, hidden_size] 第二阶段锚句表示
+        h2_positive: [batch_size, hidden_size] 第二阶段正样本表示
+        eps: 数值稳定性参数
+    
+    Returns:
+        loss: 约束项损失值
+    """
+    # 计算分子：两个差异向量的 L2 范数之和
+    diff_1 = h2_positive - h1_anchor  # [batch_size, hidden_size]
+    diff_2 = h2_anchor - h1_positive  # [batch_size, hidden_size]
+    
+    norm_diff_1 = torch.norm(diff_1, p=2, dim=-1)  # [batch_size]
+    norm_diff_2 = torch.norm(diff_2, p=2, dim=-1)  # [batch_size]
+    numerator = norm_diff_1 + norm_diff_2
+    
+    # 计算分母：第二阶段表示的范数
+    norm_h2_anchor = torch.norm(h2_anchor, p=2, dim=-1)  # [batch_size]
+    norm_h2_positive = torch.norm(h2_positive, p=2, dim=-1)  # [batch_size]
+    denominator = norm_h2_anchor + norm_h2_positive + eps
+    
+    # 确保分母不会太小，避免数值不稳定
+    denominator = torch.clamp(denominator, min=eps * 10)
+    
+    # 计算损失
+    loss = (numerator / denominator).mean()
+    
+    # 检查并处理 NaN 和 Inf
+    if torch.isnan(loss) or torch.isinf(loss):
+        loss = torch.tensor(0.0, device=loss.device, requires_grad=True)
+    
+    return loss
+
 def denoising(cls, encoder, template, type='pos-1', device='cuda', evaluation=False):
     with torch.set_grad_enabled(not cls.model_args.mask_embedding_sentence_delta_freeze and not evaluation):
         if type == 'pos-1':
@@ -265,10 +310,13 @@ def cl_forward(cls,
 
     # Separate representation for each MASK position
     # 提取第一个MASK和第二个MASK的表示
-    z1_m1 = pooler_output[:, 0, 0, :]  # [batch_size, hidden_size] - 第一个sent，第一个MASK
-    z2_m1 = pooler_output[:, 1, 0, :]  # [batch_size, hidden_size] - 第二个sent，第一个MASK
-    z1_m2 = pooler_output[:, 0, 1, :]  # [batch_size, hidden_size] - 第一个sent，第二个MASK
-    z2_m2 = pooler_output[:, 1, 1, :]  # [batch_size, hidden_size] - 第二个sent，第二个MASK
+    z1_m1 = pooler_output[:, 0, 0, :]  # [batch_size, hidden_size] - 第一个sent（template），第一个MASK（含义）
+    z1_m2 = pooler_output[:, 0, 1, :]  # [batch_size, hidden_size] - 第一个sent（template），第二个MASK（总结）
+    
+    # different_template 是反向因果关系：总结 → 含义
+    # 为了与 template 对齐（含义 → 总结），需要交换 z2_m1 和 z2_m2 的提取位置
+    z2_m1 = pooler_output[:, 1, 1, :]  # [batch_size, hidden_size] - 第二个sent（different_template），第二个MASK（含义，与z1_m1对齐）
+    z2_m2 = pooler_output[:, 1, 0, :]  # [batch_size, hidden_size] - 第二个sent（different_template），第一个MASK（总结，与z1_m2对齐）
 
     # Hard negative
     if num_sent == 3:
@@ -393,7 +441,7 @@ def cl_forward(cls,
     if torch.isnan(loss2) or torch.isinf(loss2):
         loss2 = torch.tensor(0.0, device=input_ids.device, requires_grad=True)
 
-    # 总损失 = L1 + L2（与CrossTemplateCoT设计对齐）
+
     loss = loss1 + loss2
     
     # 最终检查：如果总损失仍然是 NaN，设置为 0
