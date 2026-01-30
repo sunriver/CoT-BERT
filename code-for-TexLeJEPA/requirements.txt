@@ -1,0 +1,8 @@
+# TexLeJEPA 依赖（与 code-for-BERTNew 保持一致，复用 CoT-BERT/.venv）
+# 若使用 CoT-BERT/.venv，可不再单独安装；否则可根据 CoT-BERT/requirements*.txt 或 code-for-BERTNew/requirement_cuda_python390.txt 安装
+torch>=1.13.0
+transformers>=4.20.0
+datasets
+PyYAML
+scipy
+numpy

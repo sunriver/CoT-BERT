@@ -1,0 +1,34 @@
+model_name_or_path: "bert-base-uncased"
+train_file: "../data/wiki1m_for_simcse.txt"
+output_dir: "../result/TexLeJEPA"
+num_train_epochs: 1
+per_device_train_batch_size: 32
+gradient_accumulation_steps: 1
+learning_rate: 1e-5
+max_seq_length: 32
+
+# 训练与评估策略
+evaluation_strategy: "steps"
+metric_for_best_model: "stsb_spearman"
+load_best_model_at_end: true
+eval_steps: 10
+
+save_strategy: steps
+save_steps: 10
+save_total_limit: 1
+logging_steps: 10
+overwrite_output_dir: true
+do_train: true
+fp16: false
+preprocessing_num_workers: 10
+use_mps_device: true
+dataloader_drop_last: true
+seed: 0
+overwrite_cache: false
+
+# TexLeJEPA 超参数（通过 ModelArguments 从 yaml 读取）
+texlejepa_lamb: 0.5
+texlejepa_num_slices: 32
+texlejepa_epps_t_max: 3.0
+texlejepa_epps_n_points: 17
+texlejepa_sig_clip_value: 0.01
