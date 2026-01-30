@@ -1,4 +1,4 @@
-model_name_or_path: "bert-base-uncased"
+model_name_or_path: "/data/output/workspace_gpu2/pretrain_models/bert-base-uncased"
 train_file: "../data/wiki1m_for_simcse.txt"
 output_dir: "../result/TexLeJEPA"
 num_train_epochs: 1
