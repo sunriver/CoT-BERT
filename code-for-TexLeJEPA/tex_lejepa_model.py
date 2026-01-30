@@ -79,6 +79,12 @@ class BertForTexLeJEPA(BertPreTrainedModel):
             if L_sig.dim() > 0:
                 L_sig = L_sig.mean()
             loss = (1.0 - self.lamb) * L_inv + self.lamb * L_sig
+            
+            # 打印 Loss 构成，便于观察量级差异
+            if self.training and torch.rand(1).item() < 0.01: # 约 1% 的概率打印，避免刷屏
+                print(f"[Loss Detail] L_inv: {L_inv.item():.6f}, L_sig: {L_sig.item():.6f}, "
+                      f"Weighted L_inv: {(1.0 - self.lamb) * L_inv.item():.6f}, "
+                      f"Weighted L_sig: {self.lamb * L_sig.item():.6f}, Total: {loss.item():.6f}")
         else:
             loss = L_inv
 
