@@ -11,16 +11,20 @@ from core import EppsPulley, SlicingUnivariateTest
 
 
 class Projector(nn.Module):
-    """各向同性变换 MLP：hidden -> hidden + Tanh。"""
+    """两层 MLP Projector：增加非线性表达能力与 LayerNorm。"""
 
     def __init__(self, hidden_size: int, out_size: int = None):
         super().__init__()
         out_size = out_size or hidden_size
-        self.dense = nn.Linear(hidden_size, out_size)
-        self.activation = nn.Tanh()
+        self.linears = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size),
+            nn.LayerNorm(hidden_size),
+            nn.GELU(),
+            nn.Linear(hidden_size, out_size)
+        )
 
     def forward(self, x):
-        return self.activation(self.dense(x))
+        return self.linears(x)
 
 
 class BertForTexLeJEPA(BertPreTrainedModel):
@@ -55,11 +59,13 @@ class BertForTexLeJEPA(BertPreTrainedModel):
     def _compute_texlejepa_loss(self, z1: torch.Tensor, z2: torch.Tensor) -> torch.Tensor:
         """
         计算 TexLeJEPA 损失：
-        L = (1-λ)*MSE(z1,z2) + λ*L_SIGReg(z1)
+        L = (1-λ)*L_inv + λ * alpha * L_sig
+        其中 alpha 是动态计算的平衡系数，确保 L_sig 与 L_inv 的量级匹配。
         """
         device = z1.device
         # Invariance loss
-        L_inv = F.mse_loss(z1, z2)
+        inv_tau = 0.05
+        L_inv = F.mse_loss(z1, z2) / inv_tau # 温度系数
 
         # SIGReg 正则项：在模型内部懒加载构建 SlicingUnivariateTest
         if self.lamb > 0:
@@ -78,13 +84,22 @@ class BertForTexLeJEPA(BertPreTrainedModel):
             L_sig = sig(x)
             if L_sig.dim() > 0:
                 L_sig = L_sig.mean()
-            loss = (1.0 - self.lamb) * L_inv + self.lamb * L_sig
             
-            # 打印 Loss 构成，便于观察量级差异
+            # 动态计算平衡系数 alpha
+            with torch.no_grad():
+                # 目标：让 Weighted L_sig 的量级与 L_inv 相当
+                # 加上 1e-8 防止除零，1e-4 为保底值防止 alpha 彻底归零
+                alpha_val = (L_inv.detach() + 1e-4) / (L_sig.detach() + 1e-8)
+                alpha_val = max(alpha_val.item(), 0.0001) # 限制最小值
+            
+            # 这里的 self.lamb 作为调节平衡强度的超参数（设为 0.5 表示 1:1 对等）
+            loss = (1.0 - self.lamb) * L_inv + self.lamb * alpha_val * L_sig
+            loss = 100 * loss # 放大 Loss 以获得更大的梯度步长
+            
+            # 打印 Loss 构成，便于观察动态系数的效果
             if self.training and torch.rand(1).item() < 0.01: # 约 1% 的概率打印，避免刷屏
-                print(f"[Loss Detail] L_inv: {L_inv.item():.6f}, L_sig: {L_sig.item():.6f}, "
-                      f"Weighted L_inv: {(1.0 - self.lamb) * L_inv.item():.6f}, "
-                      f"Weighted L_sig: {self.lamb * L_sig.item():.6f}, Total: {loss.item():.6f}")
+                print(f"[Dynamic Loss] L_inv: {L_inv.item():.6f}, L_sig: {L_sig.item():.6f}, "
+                      f"Alpha: {alpha_val:.6f}, Total: {loss.item():.6f}")
         else:
             loss = L_inv
 
