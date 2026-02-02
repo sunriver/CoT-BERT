@@ -77,7 +77,7 @@ class BertForTexLeJEPA(BertPreTrainedModel):
         z2_norm = F.normalize(z2, p=2, dim=-1)
         
         # 2. Invariance loss：计算归一化后的 MSE
-        inv_tau = 0.05
+        inv_tau = 0.001
         L_inv = F.mse_loss(z1_norm, z2_norm) / inv_tau
 
         # 3. SIGReg 正则项：在模型内部懒加载构建 SlicingUnivariateTest
