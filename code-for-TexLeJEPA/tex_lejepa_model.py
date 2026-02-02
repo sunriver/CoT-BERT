@@ -20,7 +20,8 @@ class Projector(nn.Module):
             nn.Linear(hidden_size, hidden_size),
             nn.LayerNorm(hidden_size),
             nn.GELU(),
-            nn.Linear(hidden_size, out_size)
+            nn.Linear(hidden_size, out_size),
+            nn.LayerNorm(out_size)
         )
 
     def forward(self, x):
@@ -45,7 +46,7 @@ class BertForTexLeJEPA(BertPreTrainedModel):
         self.projector = Projector(config.hidden_size, proj_dim)
         # TexLeJEPA 超参数（从 config 中读取，若缺失则使用安全默认值，避免老 checkpoint 报错）
         self.lamb = lamb
-        self.num_slices = getattr(config, "texlejepa_num_slices", 32)
+        self.num_slices = getattr(config, "texlejepa_num_slices", 256)
         self.epps_t_max = getattr(config, "texlejepa_epps_t_max", 3.0)
         self.epps_n_points = getattr(config, "texlejepa_epps_n_points", 17)
         self.sig_clip_value = getattr(config, "texlejepa_sig_clip_value", 0.01)
@@ -92,7 +93,7 @@ class BertForTexLeJEPA(BertPreTrainedModel):
         loss = (1.0 - self.lamb) * L_inv + self.lamb * L_sig
         
         # 打印 Loss 构成，便于手动微调 lamb
-        if self.training and torch.rand(1).item() < 0.01: # 约 1% 的概率打印
+        if self.training and torch.rand(1).item() < 0.1: # 约 1% 的概率打印
             print(f"[Manual Loss] L_inv: {L_inv.item():.6f}, L_sig: {L_sig.item():.6f}, "
                   f"lamb: {self.lamb:.6f}, Total: {loss.item():.6f}")
 
