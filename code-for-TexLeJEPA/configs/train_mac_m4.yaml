@@ -27,7 +27,7 @@ seed: 0
 overwrite_cache: false
 
 # TexLeJEPA 超参数（通过 ModelArguments 从 yaml 读取）
-texlejepa_lamb: 0.5
+texlejepa_lamb: 0.002
 texlejepa_num_slices: 256
 texlejepa_epps_t_max: 3.0
 texlejepa_epps_n_points: 17

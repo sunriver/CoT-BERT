@@ -49,7 +49,15 @@ class BertForTexLeJEPA(BertPreTrainedModel):
         self.epps_t_max = getattr(config, "texlejepa_epps_t_max", 3.0)
         self.epps_n_points = getattr(config, "texlejepa_epps_n_points", 17)
         self.sig_clip_value = getattr(config, "texlejepa_sig_clip_value", 0.01)
-        self.sig_reg_module = None
+
+        epps = EppsPulley(t_max=self.epps_t_max, n_points=self.epps_n_points)
+        self.sig_reg_module = SlicingUnivariateTest(
+                univariate_test=epps,
+                num_slices=self.num_slices,
+                reduction="mean",
+                sampler="gaussian",
+                clip_value=self.sig_clip_value,
+        )
 
     def _pool_and_project(self, last_hidden_state):
         """取 CLS 并过 projector。last_hidden_state: (batch, seq, hidden)"""
@@ -59,49 +67,34 @@ class BertForTexLeJEPA(BertPreTrainedModel):
     def _compute_texlejepa_loss(self, z1: torch.Tensor, z2: torch.Tensor) -> torch.Tensor:
         """
         计算 TexLeJEPA 损失：
-        L = (1-λ)*L_inv + λ * alpha * L_sig
-        其中 alpha 是动态计算的平衡系数，确保 L_sig 与 L_inv 的量级匹配。
+        L = (1-λ)*L_inv + λ*L_sig
+        通过 L2 归一化和温度系数，使 L_inv 与 L_sig 处于同一量级，实现手动平衡。
         """
         device = z1.device
-        # Invariance loss
+        
+        # 1. L2 归一化：将向量映射到单位球面（关键平衡步）
+        z1_norm = F.normalize(z1, p=2, dim=-1)
+        z2_norm = F.normalize(z2, p=2, dim=-1)
+        
+        # 2. Invariance loss：计算归一化后的 MSE
         inv_tau = 0.05
-        L_inv = F.mse_loss(z1, z2) / inv_tau # 温度系数
+        L_inv = F.mse_loss(z1_norm, z2_norm) / inv_tau
 
-        # SIGReg 正则项：在模型内部懒加载构建 SlicingUnivariateTest
-        if self.lamb > 0:
-            if self.sig_reg_module is None:
-                epps = EppsPulley(t_max=self.epps_t_max, n_points=self.epps_n_points)
-                self.sig_reg_module = SlicingUnivariateTest(
-                    univariate_test=epps,
-                    num_slices=self.num_slices,
-                    reduction="mean",
-                    sampler="gaussian",
-                    clip_value=self.sig_clip_value,
-                )
-            sig = self.sig_reg_module.to(device)
-            # SlicingUnivariateTest 期望 (*, N, D)，此处 N=batch, D=hidden
-            x = z1.unsqueeze(0)  # (1, batch, hidden)
-            L_sig = sig(x)
-            if L_sig.dim() > 0:
-                L_sig = L_sig.mean()
-            
-            # 动态计算平衡系数 alpha
-            with torch.no_grad():
-                # 目标：让 Weighted L_sig 的量级与 L_inv 相当
-                # 加上 1e-8 防止除零，1e-4 为保底值防止 alpha 彻底归零
-                alpha_val = (L_inv.detach() + 1e-4) / (L_sig.detach() + 1e-8)
-                alpha_val = max(alpha_val.item(), 0.0001) # 限制最小值
-            
-            # 这里的 self.lamb 作为调节平衡强度的超参数（设为 0.5 表示 1:1 对等）
-            loss = (1.0 - self.lamb) * L_inv + self.lamb * alpha_val * L_sig
-            loss = 100 * loss # 放大 Loss 以获得更大的梯度步长
-            
-            # 打印 Loss 构成，便于观察动态系数的效果
-            if self.training and torch.rand(1).item() < 0.01: # 约 1% 的概率打印，避免刷屏
-                print(f"[Dynamic Loss] L_inv: {L_inv.item():.6f}, L_sig: {L_sig.item():.6f}, "
-                      f"Alpha: {alpha_val:.6f}, Total: {loss.item():.6f}")
-        else:
-            loss = L_inv
+        # 3. SIGReg 正则项：在模型内部懒加载构建 SlicingUnivariateTest
+        sig = self.sig_reg_module.to(device)
+        # SlicingUnivariateTest 期望 (*, N, D)，此处 N=batch, D=hidden
+        x = z1.unsqueeze(0)  # (1, batch, hidden)
+        L_sig = sig(x)
+        if L_sig.dim() > 0:
+            L_sig = L_sig.mean()
+        
+        # 4. 手动加权平衡 (不再使用动态 alpha)
+        loss = (1.0 - self.lamb) * L_inv + self.lamb * L_sig
+        
+        # 打印 Loss 构成，便于手动微调 lamb
+        if self.training and torch.rand(1).item() < 0.01: # 约 1% 的概率打印
+            print(f"[Manual Loss] L_inv: {L_inv.item():.6f}, L_sig: {L_sig.item():.6f}, "
+                  f"lamb: {self.lamb:.6f}, Total: {loss.item():.6f}")
 
         return loss
 
