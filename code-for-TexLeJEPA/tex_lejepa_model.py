@@ -20,8 +20,7 @@ class Projector(nn.Module):
             nn.Linear(hidden_size, hidden_size),
             nn.LayerNorm(hidden_size),
             nn.GELU(),
-            nn.Linear(hidden_size, out_size),
-            nn.LayerNorm(out_size)
+            nn.Linear(hidden_size, out_size)
         )
 
     def forward(self, x):
@@ -84,7 +83,7 @@ class BertForTexLeJEPA(BertPreTrainedModel):
         # 3. SIGReg 正则项：在模型内部懒加载构建 SlicingUnivariateTest
         sig = self.sig_reg_module.to(device)
         # SlicingUnivariateTest 期望 (*, N, D)，此处 N=batch, D=hidden
-        x = z1.unsqueeze(0)  # (1, batch, hidden)
+        x = z1_norm.unsqueeze(0)  # (1, batch, hidden)
         L_sig = sig(x)
         if L_sig.dim() > 0:
             L_sig = L_sig.mean()
@@ -93,7 +92,7 @@ class BertForTexLeJEPA(BertPreTrainedModel):
         loss = (1.0 - self.lamb) * L_inv + self.lamb * L_sig
         
         # 打印 Loss 构成，便于手动微调 lamb
-        if self.training and torch.rand(1).item() < 0.1: # 约 1% 的概率打印
+        if self.training and torch.rand(1).item() < 0.01: # 约 1% 的概率打印
             print(f"[Manual Loss] L_inv: {L_inv.item():.6f}, L_sig: {L_sig.item():.6f}, "
                   f"lamb: {self.lamb:.6f}, Total: {loss.item():.6f}")
 
