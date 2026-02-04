@@ -91,11 +91,11 @@ class BertForTexLeJEPA(BertPreTrainedModel):
         device = p1.device
         
         # 1. L2 归一化：为了计算 MSE 时的稳定性
-        p1_norm = F.normalize(p1, p2=2, dim=-1)
-        z2_norm = F.normalize(z2.detach(), p2=2, dim=-1)
+        p1_norm = F.normalize(p1, p=2, dim=-1)
+        z2_norm = F.normalize(z2.detach(), p=2, dim=-1)
         
-        p2_norm = F.normalize(p2, p2=2, dim=-1)
-        z1_norm = F.normalize(z1.detach(), p2=2, dim=-1)
+        p2_norm = F.normalize(p2, p=2, dim=-1)
+        z1_norm = F.normalize(z1.detach(), p=2, dim=-1)
         
         # 2. Invariance loss：非对称 MSE (SimSiam 风格)
         inv_tau = 0.001
