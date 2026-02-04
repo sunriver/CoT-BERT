@@ -28,6 +28,22 @@ class Projector(nn.Module):
         return self.linears(x)
 
 
+class Predictor(nn.Module):
+    """预测器 MLP：用于非对称结构中的特征预测。"""
+
+    def __init__(self, hidden_size: int):
+        super().__init__()
+        self.linears = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size),
+            nn.LayerNorm(hidden_size),
+            nn.GELU(),
+            nn.Linear(hidden_size, hidden_size)
+        )
+
+    def forward(self, x):
+        return self.linears(x)
+
+
 class BertForTexLeJEPA(BertPreTrainedModel):
     """
     BERT + Projector，用于 TexLeJEPA（Invariance + SIGReg）。
@@ -44,6 +60,7 @@ class BertForTexLeJEPA(BertPreTrainedModel):
         self.bert = BertModel(config)
         proj_dim = projector_hidden_size or config.hidden_size
         self.projector = Projector(config.hidden_size, proj_dim)
+        self.predictor = Predictor(proj_dim)
         # TexLeJEPA 超参数（从 config 中读取，若缺失则使用安全默认值，避免老 checkpoint 报错）
         self.lamb = lamb
         self.num_slices = getattr(config, "texlejepa_num_slices", 256)
@@ -65,36 +82,39 @@ class BertForTexLeJEPA(BertPreTrainedModel):
         pooled = last_hidden_state[:, 0, :]  # (batch, hidden)
         return self.projector(pooled)
 
-    def _compute_texlejepa_loss(self, z1: torch.Tensor, z2: torch.Tensor) -> torch.Tensor:
+    def _compute_texlejepa_loss(self, p1: torch.Tensor, z1: torch.Tensor, p2: torch.Tensor, z2: torch.Tensor) -> torch.Tensor:
         """
-        计算 TexLeJEPA 损失：
+        计算 TexLeJEPA 损失（非对称 SimSiam 风格）：
         L = (1-λ)*L_inv + λ*L_sig
-        通过 L2 归一化和温度系数，使 L_inv 与 L_sig 处于同一量级，实现手动平衡。
+        其中 L_inv = 0.5 * MSE(p1, z2.detach()) + 0.5 * MSE(p2, z1.detach())
         """
-        device = z1.device
+        device = p1.device
         
-        # 1. L2 归一化：将向量映射到单位球面（关键平衡步）
-        z1_norm = F.normalize(z1, p=2, dim=-1)
-        z2_norm = F.normalize(z2, p=2, dim=-1)
+        # 1. L2 归一化：为了计算 MSE 时的稳定性
+        p1_norm = F.normalize(p1, p2=2, dim=-1)
+        z2_norm = F.normalize(z2.detach(), p2=2, dim=-1)
         
-        # 2. Invariance loss：计算归一化后的 MSE
+        p2_norm = F.normalize(p2, p2=2, dim=-1)
+        z1_norm = F.normalize(z1.detach(), p2=2, dim=-1)
+        
+        # 2. Invariance loss：非对称 MSE (SimSiam 风格)
         inv_tau = 0.001
-        L_inv = F.mse_loss(z1_norm, z2_norm) / inv_tau
+        L_inv1 = F.mse_loss(p1_norm, z2_norm) / inv_tau
+        L_inv2 = F.mse_loss(p2_norm, z1_norm) / inv_tau
+        L_inv = 0.5 * (L_inv1 + L_inv2)
 
-        # 3. SIGReg 正则项：在模型内部懒加载构建 SlicingUnivariateTest
+        # 3. SIGReg 正则项：作用在目标特征 z1 上，确保特征分布不退化
         sig = self.sig_reg_module.to(device)
-        # SlicingUnivariateTest 期望 (*, N, D)，此处 N=batch, D=hidden
         x = z1.unsqueeze(0)  # (1, batch, hidden)
         L_sig = sig(x)
         if L_sig.dim() > 0:
             L_sig = L_sig.mean()
         
-        # 4. 手动加权平衡 (不再使用动态 alpha)
+        # 4. 手动加权平衡
         loss = (1.0 - self.lamb) * L_inv + self.lamb * L_sig
         
-        # 打印 Loss 构成，便于手动微调 lamb
-        if self.training and torch.rand(1).item() < 0.01: # 约 1% 的概率打印
-            print(f"[Manual Loss] L_inv: {L_inv.item():.6f}, L_sig: {L_sig.item():.6f}, "
+        if self.training and torch.rand(1).item() < 0.01:
+            print(f"[Asym Loss] L_inv: {L_inv.item():.6f}, L_sig: {L_sig.item():.6f}, "
                   f"lamb: {self.lamb:.6f}, Total: {loss.item():.6f}")
 
         return loss
@@ -128,7 +148,8 @@ class BertForTexLeJEPA(BertPreTrainedModel):
                 return_dict=True,
             )
             z = self._pool_and_project(out.last_hidden_state)
-            return z, out
+            p = self.predictor(z)
+            return z, p, out
 
         if sent_emb:
             # 推理模式：直接使用 BERT 的 [CLS] 输出，跳过 Projector (Input -> Encoder -> Features)
@@ -155,11 +176,11 @@ class BertForTexLeJEPA(BertPreTrainedModel):
             )
 
         # 训练：双路 Dropout 增广，同一 batch 前向两次
-        z1, out1 = _one_forward()
-        z2, out2 = _one_forward()
+        z1, p1, out1 = _one_forward()
+        z2, p2, out2 = _one_forward()
         
-        # 计算 TexLeJEPA 损失
-        loss = self._compute_texlejepa_loss(z1, z2)
+        # 计算 TexLeJEPA 损失 (非对称)
+        loss = self._compute_texlejepa_loss(p1, z1, p2, z2)
         
         if not return_dict:
             # (loss, z1, z2) 形式，便于调试或自定义使用
