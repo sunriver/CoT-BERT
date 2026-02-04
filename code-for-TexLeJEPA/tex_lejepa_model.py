@@ -20,8 +20,8 @@ class Projector(nn.Module):
             nn.Linear(hidden_size, hidden_size),
             nn.LayerNorm(hidden_size),
             nn.GELU(),
-            nn.Linear(hidden_size, out_size),
-            nn.LayerNorm(out_size),
+            nn.Linear(hidden_size, out_size)
+            # nn.LayerNorm(out_size),
         )
 
     def forward(self, x):
@@ -131,11 +131,25 @@ class BertForTexLeJEPA(BertPreTrainedModel):
             return z, out
 
         if sent_emb:
-            z, out = _one_forward()
+            # 推理模式：直接使用 BERT 的 [CLS] 输出，跳过 Projector (Input -> Encoder -> Features)
+            out = self.bert(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                token_type_ids=token_type_ids,
+                position_ids=position_ids,
+                head_mask=head_mask,
+                inputs_embeds=inputs_embeds,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+                return_dict=True,
+            )
+            # 取 [CLS] token 的 embedding，不经过 projector
+            cls_embedding = out.last_hidden_state[:, 0, :]
+            
             if not return_dict:
-                return (z,)
+                return (cls_embedding,)
             return BaseModelOutputWithPoolingAndCrossAttentions(
-                pooler_output=z,
+                pooler_output=cls_embedding,
                 last_hidden_state=out.last_hidden_state,
                 hidden_states=out.hidden_states,
             )
