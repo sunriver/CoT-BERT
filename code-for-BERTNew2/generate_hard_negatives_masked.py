@@ -127,7 +127,7 @@ def generate_hard_negatives(input_file, output_file, model_path, batch_size, dev
             is_split_into_words=True,
             padding=True, 
             truncation=True, 
-            max_length=512, 
+            max_length=128, 
             return_tensors="pt"
         ).to(device)
         
