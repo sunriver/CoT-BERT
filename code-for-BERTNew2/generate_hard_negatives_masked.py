@@ -5,8 +5,10 @@ Strategy:
 2. Randomly mask 20% of tokens (ensure at least one).
 3. Feed the masked sentence into BertForMaskedLM.
 4. For each [MASK] position:
-   - If Top-1 prediction == original token, pick Top-2.
-   - Else pick Top-1.
+   - Identify the character span (start, end) in the original sentence.
+   - Force BERT to predict a different token (Top-3 sampling).
+   - Replace only the masked part in the original sentence string.
+   - Match the casing of the original fragment.
 """
 
 import torch
@@ -16,7 +18,8 @@ import argparse
 import os
 import random
 import nltk
-from nltk.tokenize import word_tokenize
+import re
+from nltk.tokenize import word_tokenize, TreebankWordTokenizer
 
 # Download NLTK data
 try:
@@ -60,7 +63,6 @@ def mask_tokens_with_indices(input_ids, tokenizer, mask_prob=0.2, maskable_mask=
     
     # Only mask if it's in the maskable_mask (if provided)
     if maskable_mask is not None:
-        # content_mask is [batch, seq_len]
         probability_matrix.masked_fill_(~maskable_mask, value=0.0)
     
     # Sample which tokens to mask
@@ -69,7 +71,6 @@ def mask_tokens_with_indices(input_ids, tokenizer, mask_prob=0.2, maskable_mask=
     # Ensure at least one token is masked for each sentence if possible
     for i in range(masked_ids.shape[0]):
         if not masked_indices[i].any():
-            # Find candidate indices (not special, and maskable if provided)
             candidates_mask = ~special_tokens_mask[i]
             if maskable_mask is not None:
                 candidates_mask = candidates_mask & maskable_mask[i]
@@ -79,7 +80,6 @@ def mask_tokens_with_indices(input_ids, tokenizer, mask_prob=0.2, maskable_mask=
                 random_idx = candidates[random.randint(0, len(candidates) - 1)]
                 masked_indices[i, random_idx] = True
             elif maskable_mask is not None:
-                # If no content words found, fall back to any non-special token
                 candidates = (~special_tokens_mask[i]).nonzero(as_tuple=False).squeeze(-1)
                 if len(candidates) > 0:
                     random_idx = candidates[random.randint(0, len(candidates) - 1)]
@@ -107,42 +107,45 @@ def generate_hard_negatives(input_file, output_file, model_path, batch_size, dev
     results = []
     
     content_tags = {'NN', 'NNS', 'NNP', 'NNPS', 'VB', 'VBD', 'VBG', 'VBN', 'VBP', 'VBZ', 'CD'}
+    tb_tokenizer = TreebankWordTokenizer()
     
     for i in tqdm(range(0, len(sentences), batch_size)):
         batch_sentences = sentences[i : i + batch_size]
         
-        # 1. NLTK Tokenization and POS Tagging for each sentence
-        batch_words = []
-        batch_maskable_word_indices = []
-        for sent in batch_sentences:
-            words = word_tokenize(sent)
-            tags = nltk.pos_tag(words)
-            maskable_indices = [idx for idx, (word, tag) in enumerate(tags) if tag in content_tags]
-            batch_words.append(words)
-            batch_maskable_word_indices.append(set(maskable_indices))
-            
-        # 2. BERT Tokenization using pre-split words
+        # 1. BERT Tokenization with offset mapping
         encoded = tokenizer(
-            batch_words, 
-            is_split_into_words=True,
+            batch_sentences, 
             padding=True, 
             truncation=True, 
             max_length=128, 
+            return_offsets_mapping=True,
             return_tensors="pt"
         ).to(device)
         
         input_ids = encoded['input_ids']
         attention_mask = encoded['attention_mask']
+        offset_mapping = encoded['offset_mapping']
         
-        # 3. Create maskable_mask at token level
+        # 2. Create maskable_mask using NLTK POS tags aligned via offsets
         maskable_mask = torch.zeros_like(input_ids, dtype=torch.bool)
-        for b_idx in range(len(batch_sentences)):
-            word_ids = encoded.word_ids(batch_index=b_idx)
-            for t_idx, w_idx in enumerate(word_ids):
-                if w_idx is not None and w_idx in batch_maskable_word_indices[b_idx]:
-                    maskable_mask[b_idx, t_idx] = True
+        for b_idx, sent in enumerate(batch_sentences):
+            # Use TreebankWordTokenizer for both to ensure index alignment
+            words = tb_tokenizer.tokenize(sent)
+            tags = nltk.pos_tag(words)
+            spans = list(tb_tokenizer.span_tokenize(sent))
+            
+            # Identify spans of content words
+            content_spans = [spans[idx] for idx, (word, tag) in enumerate(tags) if tag in content_tags]
+            
+            token_offsets = offset_mapping[b_idx]
+            for t_idx, (start, end) in enumerate(token_offsets):
+                if start == end == 0: continue
+                for c_start, c_end in content_spans:
+                    if start >= c_start and end <= c_end:
+                        maskable_mask[b_idx, t_idx] = True
+                        break
         
-        # Mask tokens using the content-aware mask
+        # Mask tokens
         masked_input_ids, masked_indices = mask_tokens_with_indices(input_ids.cpu(), tokenizer, maskable_mask=maskable_mask.cpu())
         masked_input_ids = masked_input_ids.to(device)
         masked_indices = masked_indices.to(device)
@@ -151,29 +154,42 @@ def generate_hard_negatives(input_file, output_file, model_path, batch_size, dev
             outputs = model(input_ids=masked_input_ids, attention_mask=attention_mask)
             logits = outputs.logits # [batch, seq_len, vocab_size]
 
-        # Decode each sentence in batch
+        # Decode and Replace each sentence in batch
         for b_idx in range(len(batch_sentences)):
-            sent_masked_indices = masked_indices[b_idx]
-            curr_input_ids = input_ids[b_idx].clone()
+            original_sentence = batch_sentences[b_idx]
+            negative_sentence = original_sentence
             
-            # Find mask positions for this sentence
-            pos_indices = sent_masked_indices.nonzero(as_tuple=False).squeeze(-1)
+            pos_indices = masked_indices[b_idx].nonzero(as_tuple=False).squeeze(-1)
             
+            # We must replace from back to front to keep offsets valid
+            replacements = []
             for pos in pos_indices:
+                start, end = offset_mapping[b_idx, pos].tolist()
+                if start == end: continue
+                
+                original_fragment = original_sentence[start:end]
                 original_token_id = input_ids[b_idx, pos].item()
                 
-                # Get Top-4 predictions to ensure we have at least 3 candidates after excluding original
+                # Top-3 sampling (excluding original)
                 top_4_values, top_4_indices = torch.topk(logits[b_idx, pos], k=4)
                 candidates = [idx.item() for idx in top_4_indices if idx.item() != original_token_id]
-                
-                # Randomly pick one from Top-3 candidates (excluding original)
                 predicted_token_id = random.choice(candidates[:3])
                 
-                curr_input_ids[pos] = predicted_token_id
+                # Decode the predicted token and clean up ## prefix
+                predicted_text = tokenizer.decode([predicted_token_id]).strip().replace("##", "")
+                
+                # Case matching
+                if original_fragment.isupper():
+                    predicted_text = predicted_text.upper()
+                elif original_fragment and original_fragment[0].isupper():
+                    predicted_text = predicted_text.capitalize()
+                
+                replacements.append((start, end, predicted_text))
             
-            # Convert back to string
-            negative_sentence = tokenizer.decode(curr_input_ids, skip_special_tokens=True)
-            original_sentence = batch_sentences[b_idx]
+            # Sort replacements by start index descending
+            replacements.sort(key=lambda x: x[0], reverse=True)
+            for start, end, new_text in replacements:
+                negative_sentence = negative_sentence[:start] + new_text + negative_sentence[end:]
             
             # Print samples with small probability for monitoring
             if random.random() < 0.001:
