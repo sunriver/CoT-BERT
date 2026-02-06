@@ -162,12 +162,12 @@ def generate_hard_negatives(input_file, output_file, model_path, batch_size, dev
             for pos in pos_indices:
                 original_token_id = input_ids[b_idx, pos].item()
                 
-                # Get Top-6 predictions to ensure we have at least 5 candidates after excluding original
-                top_6_values, top_6_indices = torch.topk(logits[b_idx, pos], k=6)
-                candidates = [idx.item() for idx in top_6_indices if idx.item() != original_token_id]
+                # Get Top-4 predictions to ensure we have at least 3 candidates after excluding original
+                top_4_values, top_4_indices = torch.topk(logits[b_idx, pos], k=4)
+                candidates = [idx.item() for idx in top_4_indices if idx.item() != original_token_id]
                 
-                # Randomly pick one from Top-5 candidates (excluding original)
-                predicted_token_id = random.choice(candidates[:5])
+                # Randomly pick one from Top-3 candidates (excluding original)
+                predicted_token_id = random.choice(candidates[:3])
                 
                 curr_input_ids[pos] = predicted_token_id
             
