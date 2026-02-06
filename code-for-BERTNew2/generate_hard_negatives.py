@@ -97,7 +97,7 @@ def generate_hard_negatives(input_file, output_file, model_path, batch_size, dev
             sent_input_ids = torch.tensor([sent_tokens])
             
             # Mask sent_0 with 20% probability
-            sent_masked_ids, mask_indices = mask_tokens(sent_input_ids, tokenizer, mask_prob=0.2)
+            sent_masked_ids, mask_indices = mask_tokens(sent_input_ids, tokenizer, mask_prob=0.3)
             
             # 2. Build the template for this single sentence
             # [CLS] The sentence " {sent_0} " does not mean the sentence " {sent_0_mask} " [SEP]
@@ -107,8 +107,13 @@ def generate_hard_negatives(input_file, output_file, model_path, batch_size, dev
             sent_0_tokens = tokenizer.convert_ids_to_tokens(sent_tokens)
             sent_0_mask_tokens = tokenizer.convert_ids_to_tokens(sent_masked_ids[0].tolist())
             
-            template_text = f"The sentence \"{sent}\" does not mean the sentence \"{' '.join(sent_0_mask_tokens)}\""
+            masked = tokenizer.convert_tokens_to_string(sent_0_mask_tokens)
+            template_text = f"The sentence \"{sent}\" contradicts the sentence \"{masked}\""
             
+            should_print = random.random() < 0.01
+            if should_print:
+                print(f"Template: {template_text}")
+
             # Tokenize the whole template
             template_encoded = tokenizer(template_text, return_tensors="pt").to(device)
             
@@ -138,14 +143,20 @@ def generate_hard_negatives(input_file, output_file, model_path, batch_size, dev
             
             decoded_full = tokenizer.decode(predicted_ids[0], skip_special_tokens=True)
             
-            # Find the part after "does not mean the sentence"
-            marker = "does not mean the sentence"
+            # Find the part after "contradicts the sentence"
+            marker = "contradicts the sentence"
             if marker in decoded_full:
                 negative_sentence = decoded_full.split(marker)[-1].strip()
                 # Clean up quotes if present
                 negative_sentence = negative_sentence.strip('"').strip()
+                if should_print:
+                    print(f"Original: {sent}")
+                    print(f"Negative: {negative_sentence}")
+                    print("-" * 50)
                 batch_outputs.append(negative_sentence)
             else:
+                if should_print:
+                    print(f"Fallback used for: {sent}")
                 batch_outputs.append(sent) # Fallback
 
         for orig, neg in zip(batch_sentences, batch_outputs):
