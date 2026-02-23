@@ -313,10 +313,9 @@ def cl_forward(cls,
     z1_m1 = pooler_output[:, 0, 0, :]  # [batch_size, hidden_size] - 第一个sent（template），第一个MASK（含义）
     z1_m2 = pooler_output[:, 0, 1, :]  # [batch_size, hidden_size] - 第一个sent（template），第二个MASK（总结）
     
-    # different_template 是反向因果关系：总结 → 含义
-    # 为了与 template 对齐（含义 → 总结），需要交换 z2_m1 和 z2_m2 的提取位置
-    z2_m1 = pooler_output[:, 1, 1, :]  # [batch_size, hidden_size] - 第二个sent（different_template），第二个MASK（含义，与z1_m1对齐）
-    z2_m2 = pooler_output[:, 1, 0, :]  # [batch_size, hidden_size] - 第二个sent（different_template），第一个MASK（总结，与z1_m2对齐）
+    # 现在 different_template 的顺序与 template 一致：含义 → 总结
+    z2_m1 = pooler_output[:, 1, 0, :]  # [batch_size, hidden_size] - 第二个sent（different_template），第一个MASK（含义，与z1_m1对齐）
+    z2_m2 = pooler_output[:, 1, 1, :]  # [batch_size, hidden_size] - 第二个sent（different_template），第二个MASK（总结，与z1_m2对齐）
 
     # Hard negative
     if num_sent == 3:
@@ -380,38 +379,39 @@ def cl_forward(cls,
         z1_m2 = torch.cat(z1_m2_list, 0)
         z2_m2 = torch.cat(z2_m2_list, 0)
 
-    # 计算第一个MASK位置的InfoNCE损失 (L1)
-    if cls.model_args.dot_sim:
-        cos_sim_m1 = torch.mm(torch.sigmoid(z1_m1), torch.sigmoid(z2_m1.permute(1, 0)))
-    else:
-        cos_sim_m1 = cls.sim(z1_m1.unsqueeze(1), z2_m1.unsqueeze(0))
-
-    if cls.model_args.norm_instead_temp:
-        cos_sim_m1 *= cls.sim.temp
-        cmin, cmax = cos_sim_m1.min(), cos_sim_m1.max()
-        # 添加数值稳定性保护：防止除以零
-        eps = 1e-8
-        denominator = cmax - cmin
-        denominator = torch.clamp(denominator, min=eps)
-        cos_sim_m1 = (cos_sim_m1 - cmin) / denominator / cls.sim.temp
-
-    if num_sent == 3:
-        z1_m1_z3_m1_cos = cls.sim(z1_m1.unsqueeze(1), z3_m1.unsqueeze(0))
-        z2_m1_z3_m1_cos = cls.sim(z2_m1.unsqueeze(1), z3_m1.unsqueeze(0))
-        cos_sim_m1 = torch.cat([cos_sim_m1, z1_m1_z3_m1_cos, z2_m1_z3_m1_cos], 1)
-    elif num_sent == 4:
-        z1_m1_z3_m1_cos = cls.sim(z1_m1.unsqueeze(1), z3_m1.unsqueeze(0))
-        cos_sim_m1 = torch.cat([cos_sim_m1, z1_m1_z3_m1_cos], 1)
-
-    loss_fct = nn.CrossEntropyLoss()
-    labels_m1 = torch.arange(cos_sim_m1.size(0)).long().to(input_ids.device)
-    loss1 = loss_fct(cos_sim_m1, labels_m1)
-    
-    # 检查并处理 NaN 和 Inf
-    if torch.isnan(loss1) or torch.isinf(loss1):
-        loss1 = torch.tensor(0.0, device=input_ids.device, requires_grad=True)
+    # 计算第一个MASK位置的InfoNCE损失 (L1) - 已按需禁用，仅保留 loss2
+    # if cls.model_args.dot_sim:
+    #     cos_sim_m1 = torch.mm(torch.sigmoid(z1_m1), torch.sigmoid(z2_m1.permute(1, 0)))
+    # else:
+    #     cos_sim_m1 = cls.sim(z1_m1.unsqueeze(1), z2_m1.unsqueeze(0))
+    #
+    # if cls.model_args.norm_instead_temp:
+    #     cos_sim_m1 *= cls.sim.temp
+    #     cmin, cmax = cos_sim_m1.min(), cos_sim_m1.max()
+    #     # 添加数值稳定性保护：防止除以零
+    #     eps = 1e-8
+    #     denominator = cmax - cmin
+    #     denominator = torch.clamp(denominator, min=eps)
+    #     cos_sim_m1 = (cos_sim_m1 - cmin) / denominator / cls.sim.temp
+    #
+    # if num_sent == 3:
+    #     z1_m1_z3_m1_cos = cls.sim(z1_m1.unsqueeze(1), z3_m1.unsqueeze(0))
+    #     z2_m1_z3_m1_cos = cls.sim(z2_m1.unsqueeze(1), z3_m1.unsqueeze(0))
+    #     cos_sim_m1 = torch.cat([cos_sim_m1, z1_m1_z3_m1_cos, z2_m1_z3_m1_cos], 1)
+    # elif num_sent == 4:
+    #     z1_m1_z3_m1_cos = cls.sim(z1_m1.unsqueeze(1), z3_m1.unsqueeze(0))
+    #     cos_sim_m1 = torch.cat([cos_sim_m1, z1_m1_z3_m1_cos], 1)
+    #
+    # loss_fct = nn.CrossEntropyLoss()
+    # labels_m1 = torch.arange(cos_sim_m1.size(0)).long().to(input_ids.device)
+    # loss1 = loss_fct(cos_sim_m1, labels_m1)
+    #
+    # # 检查并处理 NaN 和 Inf
+    # if torch.isnan(loss1) or torch.isinf(loss1):
+    #     loss1 = torch.tensor(0.0, device=input_ids.device, requires_grad=True)
 
     # 计算第二个MASK位置的InfoNCE损失 (L2)
+    loss_fct = nn.CrossEntropyLoss()
     if cls.model_args.dot_sim:
         cos_sim_m2 = torch.mm(torch.sigmoid(z1_m2), torch.sigmoid(z2_m2.permute(1, 0)))
     else:
@@ -442,7 +442,7 @@ def cl_forward(cls,
         loss2 = torch.tensor(0.0, device=input_ids.device, requires_grad=True)
 
 
-    loss = loss1 + loss2
+    loss = loss2
     
     # 最终检查：如果总损失仍然是 NaN，设置为 0
     if torch.isnan(loss) or torch.isinf(loss):

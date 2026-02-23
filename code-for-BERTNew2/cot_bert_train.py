@@ -1,11 +1,12 @@
 import sys 
+import csv
 sys.path.append('..') 
 
 import os
 import torch
 import logging
 import transformers
-from datasets import load_dataset
+from datasets import load_dataset, Dataset
 from dataclasses import dataclass, field
 from typing import Optional, Union, List, Dict
 
@@ -404,7 +405,7 @@ class DataTrainingArguments:
             raise ValueError("Need either a dataset name or a training/validation file.")
         if self.train_file is not None:
             extension = self.train_file.split(".")[-1]
-            assert extension in ["csv", "json", "txt"], "`train_file` should be a csv, a json or a txt file."
+            assert extension in ["csv", "json", "txt", "tsv"], "`train_file` should be a csv, a json, a txt or a tsv file."
 
 
 @dataclass
@@ -578,10 +579,24 @@ def main():
     
     if extension == "txt":
         extension = "text"
-    if extension == "csv":
-        datasets = load_dataset(extension, data_files=data_files, cache_dir="../data/", delimiter="\t" if "tsv" in data_args.train_file else ",")
+    
+    # Support TSV files by using csv loader with tab delimiter
+    if extension == "tsv" or (extension == "csv" and ("tsv" in data_args.train_file or "hard_negatives" in data_args.train_file)):
+        datasets = load_dataset("csv", data_files=data_files, cache_dir="../data/", delimiter="\t", quoting=csv.QUOTE_NONE)
     else:
         datasets = load_dataset(extension, data_files=data_files, cache_dir="../data/")
+
+    # CoT-BERT Authors: If the dataset has 2 columns and we use negative template, 
+    #                   convert it to 3 columns (anchor, anchor, negative)
+    if "train" in datasets and datasets["train"].num_columns == 2 and model_args.mask_embedding_sentence_negative_template != '':
+        logger.info("Converting 2-column TSV dataset to 3-column triplet dataset")
+        col_names = datasets["train"].column_names
+        new_train = Dataset.from_dict({
+            "sentence0": datasets["train"][col_names[0]],
+            "sentence1": datasets["train"][col_names[0]], # positive pair is same as anchor
+            "sentence2": datasets["train"][col_names[1]], # the hard negative from TSV
+        })
+        datasets["train"] = new_train
 
     # See more about loading any type of standard or custom dataset (from files, python dict, pandas DataFrame, etc) at
     # https://huggingface.co/docs/datasets/loading_datasets.html.
@@ -757,10 +772,10 @@ def main():
                     examples[sent2_cname][idx] = " "
             sentences += examples[sent2_cname]
         
-        if len(model_args.mask_embedding_sentence_negative_template) > 0:
+        if len(model_args.mask_embedding_sentence_negative_template) > 0 and sent2_cname is None:
             sentences += examples[sent0_cname]
 
-        if len(model_args.mask_embedding_sentence_different_negative_template) > 0:
+        if len(model_args.mask_embedding_sentence_different_negative_template) > 0 and sent2_cname is None:
             sentences += examples[sent0_cname]
 
         if model_args.mask_embedding_sentence:
@@ -776,10 +791,14 @@ def main():
             if len(model_args.mask_embedding_sentence_negative_template) > 0:
                 bs3 = tokenizer.encode(model_args.mask_embedding_sentence_bs3)[:-1]
                 es3 = tokenizer.encode(model_args.mask_embedding_sentence_es3)[1:]
+            else:
+                bs3, es3 = bs, es
             
             if len(model_args.mask_embedding_sentence_different_negative_template) > 0:
                 bs4 = tokenizer.encode(model_args.mask_embedding_sentence_bs4)[:-1]
                 es4 = tokenizer.encode(model_args.mask_embedding_sentence_es4)[1:]
+            else:
+                bs4, es4 = bs, es
 
             sent_features = {'input_ids': [], 'attention_mask': []}
 
