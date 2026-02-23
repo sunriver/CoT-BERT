@@ -165,6 +165,7 @@ def cl_init(cls, config):
         cls.mlp = MLPLayer(config, scale=1)
     
     cls.sim = Similarity(temp=cls.model_args.temp)
+    cls.sim_scd = Similarity(temp=cls.model_args.scd_temp)
     cls.init_weights()
 
 def cl_forward(cls,
@@ -395,9 +396,8 @@ def cl_forward(cls,
     #     cos_sim_m1 = (cos_sim_m1 - cmin) / denominator / cls.sim.temp
     #
     # if num_sent == 3:
-    #     z1_m1_z3_m1_cos = cls.sim(z1_m1.unsqueeze(1), z3_m1.unsqueeze(0))
-    #     z2_m1_z3_m1_cos = cls.sim(z2_m1.unsqueeze(1), z3_m1.unsqueeze(0))
-    #     cos_sim_m1 = torch.cat([cos_sim_m1, z1_m1_z3_m1_cos, z2_m1_z3_m1_cos], 1)
+    #     z1_m1_z3_m1_cos = cls.sim_scd(z1_m1.unsqueeze(1), z3_m1.unsqueeze(0))
+    #     cos_sim_m1 = torch.cat([cos_sim_m1, z1_m1_z3_m1_cos], 1)
     # elif num_sent == 4:
     #     z1_m1_z3_m1_cos = cls.sim(z1_m1.unsqueeze(1), z3_m1.unsqueeze(0))
     #     cos_sim_m1 = torch.cat([cos_sim_m1, z1_m1_z3_m1_cos], 1)
@@ -427,9 +427,8 @@ def cl_forward(cls,
         cos_sim_m2 = (cos_sim_m2 - cmin) / denominator / cls.sim.temp
 
     if num_sent == 3:
-        z1_m2_z3_m2_cos = cls.sim(z1_m2.unsqueeze(1), z3_m2.unsqueeze(0))
-        z2_m2_z3_m2_cos = cls.sim(z2_m2.unsqueeze(1), z3_m2.unsqueeze(0))
-        cos_sim_m2 = torch.cat([cos_sim_m2, z1_m2_z3_m2_cos, z2_m2_z3_m2_cos], 1)
+        z1_m2_z3_m2_cos = cls.sim_scd(z1_m2.unsqueeze(1), z3_m2.unsqueeze(0))
+        cos_sim_m2 = torch.cat([cos_sim_m2, z1_m2_z3_m2_cos], 1)
     elif num_sent == 4:
         z1_m2_z3_m2_cos = cls.sim(z1_m2.unsqueeze(1), z3_m2.unsqueeze(0))
         cos_sim_m2 = torch.cat([cos_sim_m2, z1_m2_z3_m2_cos], 1)

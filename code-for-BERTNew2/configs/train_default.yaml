@@ -28,6 +28,7 @@ overwrite_cache: false
 
 # CoT-BERT specific arguments
 temp: 0.05
+scd_temp: 0.05
 mlp_only_train: true
 mask_embedding_sentence: true
 mask_num: 2

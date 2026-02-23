@@ -100,6 +100,12 @@ class ModelArguments:
             "help": "Temperature for softmax."
         }
     )
+    scd_temp: float = field(
+        default=0.05,
+        metadata={
+            "help": "Temperature for Hard Negative softmax."
+        }
+    )
     hard_negative_weight: float = field(
         default=0,
         metadata={
