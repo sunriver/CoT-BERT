@@ -190,6 +190,10 @@ class BertEmbeddings(nn.Module):
         # any TensorFlow checkpoint file
         self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
+        self.enable_custom_dropout_for_last_column = getattr(config, "enable_custom_dropout_for_last_column", False)
+        if self.enable_custom_dropout_for_last_column:
+            self.dropout_last_column = nn.Dropout(getattr(config, "hidden_dropout_prob_for_last_column", config.hidden_dropout_prob))
+            self.num_columns = getattr(config, "num_columns", 2)
         # position_ids (1, len position emb) is contiguous in memory and exported when serialized
         self.position_embedding_type = getattr(config, "position_embedding_type", "absolute")
         self.register_buffer("position_ids", torch.arange(config.max_position_embeddings).expand((1, -1)))
@@ -235,8 +239,16 @@ class BertEmbeddings(nn.Module):
             position_embeddings = self.position_embeddings(position_ids)
             embeddings += position_embeddings
         embeddings = self.LayerNorm(embeddings)
-        embeddings = self.dropout(embeddings)
+        if self.enable_custom_dropout_for_last_column and self.training:
+            sep = embeddings.shape[0] - embeddings.shape[0] / self.num_columns
+            assert sep.is_integer()
+            sep = int(sep)
+            embeddings = torch.cat([self.dropout(embeddings[:sep]), self.dropout_last_column(embeddings[sep:])], dim=0)
+        else:
+            embeddings = self.dropout(embeddings)
         return embeddings
+
+        
 
 
 class BertSelfAttention(nn.Module):

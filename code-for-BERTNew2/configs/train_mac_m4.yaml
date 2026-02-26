@@ -30,6 +30,12 @@ overwrite_cache: false
 temp: 0.05
 scd_temp: 0.1
 mlp_only_train: true
+
+# SAN-style custom dropout for last column (BertEmbeddings)
+enable_custom_dropout_for_last_column: true
+hidden_dropout_prob_for_last_column: 0.2
+num_columns: 3
+
 mask_embedding_sentence: true
 mask_num: 2
 mask_embedding_sentence_template: '*cls*_The_sentence_of_"*sent_0*"_means_*mask*_,_so_it_can_be_summarized_as_*mask*_._*sep+*'

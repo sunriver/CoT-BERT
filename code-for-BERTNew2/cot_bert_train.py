@@ -106,6 +106,18 @@ class ModelArguments:
             "help": "Temperature for Hard Negative softmax."
         }
     )
+    enable_custom_dropout_for_last_column: bool = field(
+        default=False,
+        metadata={"help": "Enable SAN-style custom dropout for last column in BertEmbeddings."},
+    )
+    hidden_dropout_prob_for_last_column: float = field(
+        default=0.1,
+        metadata={"help": "Dropout prob for last column when enable_custom_dropout_for_last_column is True."},
+    )
+    num_columns: int = field(
+        default=2,
+        metadata={"help": "Number of columns for last-column dropout split (batch split)."},
+    )
     hard_negative_weight: float = field(
         default=0,
         metadata={
@@ -618,6 +630,9 @@ def main():
     }
     
     config = AutoConfig.from_pretrained(model_args.model_name_or_path, **config_kwargs)
+    config.enable_custom_dropout_for_last_column = model_args.enable_custom_dropout_for_last_column
+    config.hidden_dropout_prob_for_last_column = model_args.hidden_dropout_prob_for_last_column
+    config.num_columns = model_args.num_columns
 
     tokenizer_kwargs = {
         "cache_dir": model_args.cache_dir,
