@@ -2,10 +2,10 @@ import torch
 import torch.nn as nn
 import torch.distributed as dist
 
-from transformers.models.bert.modeling_bert import BertPreTrainedModel, BertModel
+from models_scd.modeling_bert_4_28_0 import BertPreTrainedModel, BertModel
+# from transformers.models.bert.modeling_bert import BertPreTrainedModel, BertModel
 from transformers.models.roberta.modeling_roberta import RobertaPreTrainedModel, RobertaModel
 from transformers.modeling_outputs import SequenceClassifierOutput, BaseModelOutputWithPoolingAndCrossAttentions
-
 
 class MLPLayer(nn.Module):
     """
