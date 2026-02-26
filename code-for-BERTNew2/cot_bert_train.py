@@ -118,6 +118,14 @@ class ModelArguments:
         default=2,
         metadata={"help": "Number of columns for last-column dropout split (batch split)."},
     )
+    dropout_different_prob: float = field(
+        default=0.1,
+        metadata={"help": "Dropout prob for different column embeddings."},
+    )
+    dropout_negative_prob: float = field(
+        default=0.1,
+        metadata={"help": "Dropout prob for negative column embeddings."},
+    )
     hard_negative_weight: float = field(
         default=0,
         metadata={
@@ -633,6 +641,8 @@ def main():
     config.enable_custom_dropout_for_last_column = model_args.enable_custom_dropout_for_last_column
     config.hidden_dropout_prob_for_last_column = model_args.hidden_dropout_prob_for_last_column
     config.num_columns = model_args.num_columns
+    config.dropout_different_prob = model_args.dropout_different_prob
+    config.dropout_negative_prob = model_args.dropout_negative_prob
 
     tokenizer_kwargs = {
         "cache_dir": model_args.cache_dir,

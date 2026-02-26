@@ -9,13 +9,13 @@ max_seq_length: 32
 evaluation_strategy: steps
 metric_for_best_model: stsb_spearman
 load_best_model_at_end: true
-eval_steps: 10
+eval_steps: 2
 
 save_strategy: steps
-save_steps: 10
+save_steps: 2
 save_total_limit: 1
 
-logging_steps: 10
+logging_steps: 2
 
 overwrite_output_dir: true
 do_train: true
@@ -35,6 +35,8 @@ mlp_only_train: true
 enable_custom_dropout_for_last_column: true
 hidden_dropout_prob_for_last_column: 0.2
 num_columns: 3
+dropout_different_prob: 0.1
+dropout_negative_prob: 0.1
 
 mask_embedding_sentence: true
 mask_num: 2

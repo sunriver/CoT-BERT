@@ -35,6 +35,8 @@ mlp_only_train: true
 enable_custom_dropout_for_last_column: false
 hidden_dropout_prob_for_last_column: 0.1
 num_columns: 2
+dropout_different_prob: 0.1
+dropout_negative_prob: 0.1
 
 mask_embedding_sentence: true
 mask_num: 2

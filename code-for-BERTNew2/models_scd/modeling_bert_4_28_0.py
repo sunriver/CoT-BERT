@@ -192,8 +192,14 @@ class BertEmbeddings(nn.Module):
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.enable_custom_dropout_for_last_column = getattr(config, "enable_custom_dropout_for_last_column", False)
         if self.enable_custom_dropout_for_last_column:
-            self.dropout_last_column = nn.Dropout(getattr(config, "hidden_dropout_prob_for_last_column", config.hidden_dropout_prob))
-            self.num_columns = getattr(config, "num_columns", 2)
+            # 这里假设按 [anchor, different, negative] 三列在 batch 维拼接
+            self.num_columns = getattr(config, "num_columns", 3)
+            assert self.num_columns == 3, "num_columns 应为 3 才能使用 anchor/different/negative 三个独立 dropout"
+            p_anchor = config.hidden_dropout_prob
+            p_different = getattr(config, "dropout_different_prob", p_anchor)
+            p_negative = getattr(config, "dropout_negative_prob", p_anchor)
+            self.dropout_different = nn.Dropout(p_different)
+            self.dropout_negative = nn.Dropout(p_negative)
         # position_ids (1, len position emb) is contiguous in memory and exported when serialized
         self.position_embedding_type = getattr(config, "position_embedding_type", "absolute")
         self.register_buffer("position_ids", torch.arange(config.max_position_embeddings).expand((1, -1)))
@@ -240,10 +246,18 @@ class BertEmbeddings(nn.Module):
             embeddings += position_embeddings
         embeddings = self.LayerNorm(embeddings)
         if self.enable_custom_dropout_for_last_column and self.training:
-            sep = embeddings.shape[0] - embeddings.shape[0] / self.num_columns
-            assert sep.is_integer()
-            sep = int(sep)
-            embeddings = torch.cat([self.dropout(embeddings[:sep]), self.dropout_last_column(embeddings[sep:])], dim=0)
+            # embeddings 形状: [batch_size * 3, seq_len, hidden_size]
+            total_rows = embeddings.shape[0]
+            assert total_rows % self.num_columns == 0
+            rows_per_col = total_rows // self.num_columns
+            anchor = embeddings[:rows_per_col]
+            different = embeddings[rows_per_col : 2 * rows_per_col]
+            negative = embeddings[2 * rows_per_col :]
+            # anchor 使用默认的 embedding dropout
+            anchor = self.dropout(anchor)
+            different = self.dropout_different(different)
+            negative = self.dropout_negative(negative)
+            embeddings = torch.cat([anchor, different, negative], dim=0)
         else:
             embeddings = self.dropout(embeddings)
         return embeddings
