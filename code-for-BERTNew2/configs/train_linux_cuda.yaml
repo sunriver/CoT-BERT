@@ -33,7 +33,7 @@ mlp_only_train: true
 
 # SAN-style custom dropout for last column (BertEmbeddings)
 enable_custom_dropout_for_last_column: true
-hidden_dropout_prob_for_last_column: 0.2
+hidden_dropout_prob_for_last_column: 0.1
 num_columns: 3
 dropout_different_prob: 0.1
 dropout_negative_prob: 0.1
