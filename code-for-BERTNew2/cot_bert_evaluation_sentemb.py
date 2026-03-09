@@ -158,6 +158,17 @@ def main():
         model.es = tokenizer.encode(model_args.mask_embedding_sentence_es, add_special_tokens=False)
         model.mask_embedding_template = tokenizer.encode(model_args.mask_embedding_sentence_bs + model_args.mask_embedding_sentence_es)
 
+        # 默认设置 bs2/es2 等，防止 denoising 报错 (评估时通常与 bs/es 一致)
+        model.bs2 = model.bs
+        model.es2 = model.es
+        model.mask_embedding_template2 = model.mask_embedding_template
+        model.bs3 = model.bs
+        model.es3 = model.es
+        model.mask_embedding_template3 = model.mask_embedding_template
+        model.bs4 = model.bs
+        model.es4 = model.es
+        model.mask_embedding_template4 = model.mask_embedding_template
+
         if model_args.mask_embedding_sentence_autoprompt:
             # 从 checkpoint 读 p_mbv
             state_dict = torch.load(os.path.join(args.model_name_or_path, 'pytorch_model.bin'), map_location='cpu')
@@ -187,13 +198,12 @@ def main():
     def batcher(params, batch):
         sentences = [' '.join(s) for s in batch]
         
-        if args.mask_embedding_sentence and args.mask_embedding_sentence_template:
-            template = args.mask_embedding_sentence_template
-            template = template.replace('*mask*', tokenizer.mask_token)\
-                               .replace('_', ' ').replace('*sep+*', '').replace('*cls*', '')
-            for i, s in enumerate(sentences):
-                if len(s) > 0 and s[-1] not in '.?"\'': s += '.'
-                sentences[i] = template.replace('*sent 0*', s).strip()
+        # NOTE: 当使用 BertForCL 的 sent_emb=True 时，模型内部会自动处理 template 注入。
+        # 因此这里不需要手动对句子应用 template，否则会导致重复注入模板（double-template）。
+        # 只保留基础的预处理（如补齐句号，可选）。
+        for i, s in enumerate(sentences):
+            if len(s) > 0 and s[-1] not in '.?"\'':
+                sentences[i] = s + '.'
 
         batch = tokenizer.batch_encode_plus(
             sentences,

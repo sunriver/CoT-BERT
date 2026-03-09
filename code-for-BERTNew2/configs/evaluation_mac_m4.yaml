@@ -3,6 +3,6 @@ mode: test
 mask_embedding_sentence: true
 mask_num: 2
 mask_embedding_sentence_template: '*cls*_The_sentence_of_"*sent_0*"_means_*mask*_,_so_it_can_be_summarized_as_*mask*_._*sep+*'
-mask_embedding_sentence_delta: false
+mask_embedding_sentence_delta: true
 task_set: sts
 
