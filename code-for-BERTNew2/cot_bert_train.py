@@ -377,6 +377,10 @@ class ModelArguments:
         metadata={
         }
     )
+    asymmetric_attention: bool = field(
+        default=False,
+        metadata={"help": "Whether to use asymmetric attention (part1 does not see part2)."}
+    )
 
 @dataclass
 class DataTrainingArguments:
@@ -827,25 +831,61 @@ def main():
             
             if len(model_args.mask_embedding_sentence_different_negative_template) > 0:
                 bs4 = tokenizer.encode(model_args.mask_embedding_sentence_bs4)[:-1]
-                es4 = tokenizer.encode(model_args.mask_embedding_sentence_es4)[1:]
+                es4 = tokenizer.encode(model_args.mask_embedding_sentence_es4)[:-1]
             else:
                 bs4, es4 = bs, es
 
-            sent_features = {'input_ids': [], 'attention_mask': []}
+            # 预计算切分点长度 (基于模板中的逗号)
+            split_lens = {}
+            if model_args.asymmetric_attention:
+                for t_name, t_val in [
+                    ('bs', model_args.mask_embedding_sentence_bs),
+                    ('bs2', model_args.mask_embedding_sentence_bs2 if len(model_args.mask_embedding_sentence_different_template) > 0 else model_args.mask_embedding_sentence_bs),
+                    ('bs3', model_args.mask_embedding_sentence_bs3 if len(model_args.mask_embedding_sentence_negative_template) > 0 else model_args.mask_embedding_sentence_bs),
+                    ('bs4', model_args.mask_embedding_sentence_bs4 if len(model_args.mask_embedding_sentence_different_negative_template) > 0 else model_args.mask_embedding_sentence_bs)
+                ]:
+                    if ',' in t_val:
+                        # 找到逗号在编码后的位置
+                        part1 = t_val.split(',')[0] + ','
+                        split_lens[t_name] = len(tokenizer.encode(part1, add_special_tokens=True)) - 1 # 减去 [CLS]
+                    else:
+                        split_lens[t_name] = 1000 # 默认不切分
+
+            sent_features = {'input_ids': [], 'attention_mask': [], 'token_type_ids': []}
 
             for i, s in enumerate(sentences):
                 if i < total:
                     s = tokenizer.encode(s, add_special_tokens=False)[:data_args.max_seq_length]
-                    sent_features['input_ids'].append(bs + s + es)
+                    input_ids = bs + s + es
+                    sent_features['input_ids'].append(input_ids)
+                    if model_args.asymmetric_attention:
+                        split_at = split_lens.get('bs', 1000)
+                        tti = [0] * min(len(input_ids), split_at) + [1] * max(0, len(input_ids) - split_at)
+                        sent_features['token_type_ids'].append(tti)
                 elif i < 2 * total:
                     s = tokenizer.encode(s, add_special_tokens=False)[:data_args.max_seq_length]
-                    sent_features['input_ids'].append(bs2 + s + es2)
+                    input_ids = bs2 + s + es2
+                    sent_features['input_ids'].append(input_ids)
+                    if model_args.asymmetric_attention:
+                        split_at = split_lens.get('bs2', 1000)
+                        tti = [0] * min(len(input_ids), split_at) + [1] * max(0, len(input_ids) - split_at)
+                        sent_features['token_type_ids'].append(tti)
                 elif i < 3 * total:
                     s = tokenizer.encode(s, add_special_tokens=False)[:data_args.max_seq_length]
-                    sent_features['input_ids'].append(bs3 + s + es3)
+                    input_ids = bs3 + s + es3
+                    sent_features['input_ids'].append(input_ids)
+                    if model_args.asymmetric_attention:
+                        split_at = split_lens.get('bs3', 1000)
+                        tti = [0] * min(len(input_ids), split_at) + [1] * max(0, len(input_ids) - split_at)
+                        sent_features['token_type_ids'].append(tti)
                 else:
                     s = tokenizer.encode(s, add_special_tokens=False)[:data_args.max_seq_length]
-                    sent_features['input_ids'].append(bs4 + s + es4)
+                    input_ids = bs4 + s + es4
+                    sent_features['input_ids'].append(input_ids)
+                    if model_args.asymmetric_attention:
+                        split_at = split_lens.get('bs4', 1000)
+                        tti = [0] * min(len(input_ids), split_at) + [1] * max(0, len(input_ids) - split_at)
+                        sent_features['token_type_ids'].append(tti)
             
             ml = max(len(i) for i in sent_features['input_ids'])
 
@@ -853,6 +893,11 @@ def main():
                 t = sent_features['input_ids'][i]
                 sent_features['input_ids'][i] = t + [tokenizer.pad_token_id] * (ml - len(t))
                 sent_features['attention_mask'].append(len(t) * [1] + (ml - len(t)) * [0])
+                if model_args.asymmetric_attention:
+                    tti = sent_features['token_type_ids'][i]
+                    sent_features['token_type_ids'][i] = tti + [1] * (ml - len(tti)) # Padding 部分默认设为 1
+                else:
+                    sent_features['token_type_ids'].append([0] * ml)
         else:
             sent_features = tokenizer(
                 sentences,
@@ -860,6 +905,8 @@ def main():
                 truncation=True,
                 padding="max_length" if data_args.pad_to_max_length else False,
             )
+            if 'token_type_ids' not in sent_features:
+                sent_features['token_type_ids'] = [[0] * len(i) for i in sent_features['input_ids']]
 
         features = {}
         # CoT-BERT Authors: add judgement for unsupervised negative instance

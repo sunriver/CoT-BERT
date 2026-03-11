@@ -1018,6 +1018,26 @@ class BertModel(BertPreTrainedModel):
         # ourselves in which case we just need to make it broadcastable to all heads.
         extended_attention_mask: torch.Tensor = self.get_extended_attention_mask(attention_mask, input_shape)
 
+        # 核心逻辑：非对称注意力 (Asymmetric Attention)
+        # 前半部分 (token_type_id=0) 不可见 后半部分 (token_type_id=1)
+        if getattr(self.config, "asymmetric_attention", False):
+            # token_type_ids 形状: [batch_size, seq_length]
+            # 构造 2D 关系矩阵 [batch_size, seq_length, seq_length]
+            # query_type: [batch_size, seq_length, 1]
+            # key_type: [batch_size, 1, seq_length]
+            query_type = token_type_ids.unsqueeze(2)
+            key_type = token_type_ids.unsqueeze(1)
+            
+            # 定义非法路径：Query 是前半部分 (0)，且 Key 是后半部分 (1)
+            # 这意味着前半部分的 Token 在计算注意力时看不到后半部分的 Token
+            illegal_mask = (query_type == 0) & (key_type == 1)
+            
+            # 将非法路径在掩码中设为一个极大的负数
+            # extended_attention_mask 形状为 [batch_size, 1, seq_length, seq_length] 或类似
+            # 这里的 illegal_mask 需要增加 head 维度
+            asym_mask = illegal_mask.unsqueeze(1).to(dtype=extended_attention_mask.dtype) * -10000.0
+            extended_attention_mask = extended_attention_mask + asym_mask
+
         # If a 2D or 3D attention mask is provided for the cross-attention
         # we need to make broadcastable to [batch_size, num_heads, seq_length, seq_length]
         if self.config.is_decoder and encoder_hidden_states is not None:
