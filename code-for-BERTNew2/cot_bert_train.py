@@ -647,6 +647,7 @@ def main():
     config.num_columns = model_args.num_columns
     config.dropout_different_prob = model_args.dropout_different_prob
     config.dropout_negative_prob = model_args.dropout_negative_prob
+    config.asymmetric_attention = model_args.asymmetric_attention
 
     tokenizer_kwargs = {
         "cache_dir": model_args.cache_dir,
