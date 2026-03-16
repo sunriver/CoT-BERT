@@ -581,21 +581,6 @@ def main():
             "Use --overwrite_output_dir to overcome."
         )
 
-    # 将本次训练用到的全部参数保存到 output_dir，便于评估与复现
-    if is_main_process(training_args.local_rank):
-        os.makedirs(training_args.output_dir, exist_ok=True)
-        full_config = {
-            "model_args": _to_json_serializable(model_args),
-            "data_args": _to_json_serializable(data_args),
-            "training_args": _to_json_serializable(training_args),
-        }
-        full_config_path = os.path.join(training_args.output_dir, "train_config_full.json")
-        try:
-            with open(full_config_path, "w", encoding="utf-8") as f:
-                json.dump(full_config, f, ensure_ascii=False, indent=2)
-            logger.info("Saved full training config to %s", full_config_path)
-        except Exception as e:
-            logger.warning("Failed to save train_config_full.json: %s", e)
 
     # Setup logging
     logging.basicConfig(
@@ -959,6 +944,22 @@ def main():
                 features[key] = [[sent_features[key][i], sent_features[key][i + total]] for i in range(total)]
 
         return features
+
+    # 将本次训练用到的全部参数保存到 output_dir，便于评估与复现
+    if is_main_process(training_args.local_rank):
+        os.makedirs(training_args.output_dir, exist_ok=True)
+        full_config = {
+            "model_args": _to_json_serializable(model_args),
+            "data_args": _to_json_serializable(data_args),
+            "training_args": _to_json_serializable(training_args),
+        }
+        full_config_path = os.path.join(training_args.output_dir, "train_config_full.json")
+        try:
+            with open(full_config_path, "w", encoding="utf-8") as f:
+                json.dump(full_config, f, ensure_ascii=False, indent=2)
+            logger.info("Saved full training config to %s", full_config_path)
+        except Exception as e:
+            logger.warning("Failed to save train_config_full.json: %s", e)
 
     if training_args.do_train:
         train_dataset = datasets["train"].map(
