@@ -191,7 +191,7 @@ class BertEmbeddings(nn.Module):
         self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.enable_custom_dropout_for_last_column = getattr(config, "enable_custom_dropout_for_last_column", False)
-        if self.enable_custom_dropout_for_last_column:
+        if self.enable_custom_dropout_for_last_column and self.training :
             # 这里假设按 [anchor, different, negative] 三列在 batch 维拼接
             self.num_columns = getattr(config, "num_columns", 3)
             assert self.num_columns == 3, "num_columns 应为 3 才能使用 anchor/different/negative 三个独立 dropout"

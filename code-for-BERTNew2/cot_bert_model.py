@@ -428,7 +428,8 @@ def cl_forward(cls,
 
     if num_sent == 3:
         z1_m2_z3_m2_cos = cls.sim_scd(z1_m2.unsqueeze(1), z3_m2.unsqueeze(0))
-        cos_sim_m2 = torch.cat([cos_sim_m2, z1_m2_z3_m2_cos], 1)
+        z2_m2_z3_m2_cos = cls.sim_scd(z2_m2.unsqueeze(1), z3_m2.unsqueeze(0))
+        cos_sim_m2 = torch.cat([cos_sim_m2, z1_m2_z3_m2_cos, z2_m2_z3_m2_cos], 1)
     elif num_sent == 4:
         z1_m2_z3_m2_cos = cls.sim(z1_m2.unsqueeze(1), z3_m2.unsqueeze(0))
         cos_sim_m2 = torch.cat([cos_sim_m2, z1_m2_z3_m2_cos], 1)
