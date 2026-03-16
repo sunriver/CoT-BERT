@@ -141,6 +141,27 @@ class ModelArguments:
         default=0.1,
         metadata={"help": "Dropout prob for negative column embeddings."},
     )
+    # Column-aware embeddings & attention dropout
+    enable_column_type_embeddings: bool = field(
+        default=False,
+        metadata={"help": "Enable column-type embeddings to distinguish anchor/different/negative columns."},
+    )
+    enable_column_attention_dropout: bool = field(
+        default=False,
+        metadata={"help": "Enable column-aware attention dropout with per-column dropout probabilities."},
+    )
+    attention_dropout_anchor_prob: float = field(
+        default=0.1,
+        metadata={"help": "Attention dropout prob for anchor column."},
+    )
+    attention_dropout_different_prob: float = field(
+        default=0.1,
+        metadata={"help": "Attention dropout prob for different column."},
+    )
+    attention_dropout_negative_prob: float = field(
+        default=0.1,
+        metadata={"help": "Attention dropout prob for negative column."},
+    )
     hard_negative_weight: float = field(
         default=0,
         metadata={
@@ -664,6 +685,18 @@ def main():
     config.dropout_different_prob = model_args.dropout_different_prob
     config.dropout_negative_prob = model_args.dropout_negative_prob
     config.asymmetric_attention = model_args.asymmetric_attention
+    # Column-aware embeddings & attention dropout
+    config.enable_column_type_embeddings = model_args.enable_column_type_embeddings
+    config.enable_column_attention_dropout = model_args.enable_column_attention_dropout
+    config.attention_dropout_anchor_prob = getattr(
+        model_args, "attention_dropout_anchor_prob", config.attention_probs_dropout_prob
+    )
+    config.attention_dropout_different_prob = getattr(
+        model_args, "attention_dropout_different_prob", config.attention_probs_dropout_prob
+    )
+    config.attention_dropout_negative_prob = getattr(
+        model_args, "attention_dropout_negative_prob", config.attention_probs_dropout_prob
+    )
 
     tokenizer_kwargs = {
         "cache_dir": model_args.cache_dir,

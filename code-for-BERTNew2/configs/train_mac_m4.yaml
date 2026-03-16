@@ -41,6 +41,13 @@ dropout_different_prob: 0.15
 dropout_negative_prob: 0.25
 asymmetric_attention: false
 
+# Column-aware embeddings & attention dropout
+enable_column_type_embeddings: true
+enable_column_attention_dropout: true
+attention_dropout_anchor_prob: 0.1
+attention_dropout_different_prob: 0.2
+attention_dropout_negative_prob: 0.2
+
 mask_embedding_sentence: true
 mask_num: 2
 mask_embedding_sentence_template: '*cls*_The_sentence_of_"*sent_0*"_means_*mask*_,_so_it_can_be_summarized_as_*mask*_._*sep+*'

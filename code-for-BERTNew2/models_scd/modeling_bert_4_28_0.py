@@ -182,9 +182,16 @@ class BertEmbeddings(nn.Module):
 
     def __init__(self, config):
         super().__init__()
+        self.config = config
         self.word_embeddings = nn.Embedding(config.vocab_size, config.hidden_size, padding_idx=config.pad_token_id)
         self.position_embeddings = nn.Embedding(config.max_position_embeddings, config.hidden_size)
         self.token_type_embeddings = nn.Embedding(config.type_vocab_size, config.hidden_size)
+
+        # Optional column-type embeddings: encode anchor / different / negative column identity
+        self.enable_column_type_embeddings = getattr(config, "enable_column_type_embeddings", False)
+        self.num_columns = getattr(config, "num_columns", 3)
+        if self.enable_column_type_embeddings and self.num_columns > 1:
+            self.column_type_embeddings = nn.Embedding(self.num_columns, config.hidden_size)
 
         # self.LayerNorm is not snake-cased to stick with TensorFlow model variable name and be able to load
         # any TensorFlow checkpoint file
@@ -193,7 +200,6 @@ class BertEmbeddings(nn.Module):
         self.enable_custom_dropout_for_last_column = getattr(config, "enable_custom_dropout_for_last_column", False)
         if self.enable_custom_dropout_for_last_column and self.training :
             # 这里假设按 [anchor, different, negative] 三列在 batch 维拼接
-            self.num_columns = getattr(config, "num_columns", 3)
             assert self.num_columns == 3, "num_columns 应为 3 才能使用 anchor/different/negative 三个独立 dropout"
             p_anchor = config.hidden_dropout_prob
             p_different = getattr(config, "dropout_different_prob", p_anchor)
@@ -212,6 +218,7 @@ class BertEmbeddings(nn.Module):
         input_ids: Optional[torch.LongTensor] = None,
         token_type_ids: Optional[torch.LongTensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
+        column_type_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         past_key_values_length: int = 0,
     ) -> torch.Tensor:
@@ -241,6 +248,18 @@ class BertEmbeddings(nn.Module):
         token_type_embeddings = self.token_type_embeddings(token_type_ids)
 
         embeddings = inputs_embeds + token_type_embeddings
+        # Add column-type embeddings if enabled (broadcast along sequence length)
+        if self.enable_column_type_embeddings and self.num_columns > 1:
+            if column_type_ids is None:
+                # Default: all treated as column 0 for non-SCD usage
+                column_type_ids = torch.zeros(
+                    input_shape[0], dtype=torch.long, device=inputs_embeds.device
+                )
+            if column_type_ids.dim() == 1:
+                # [batch] -> [batch, seq_len]
+                column_type_ids = column_type_ids.unsqueeze(1).expand(input_shape[0], seq_length)
+            column_type_embeds = self.column_type_embeddings(column_type_ids)
+            embeddings = embeddings + column_type_embeds
         if self.position_embedding_type == "absolute":
             position_embeddings = self.position_embeddings(position_ids)
             embeddings += position_embeddings
@@ -283,6 +302,19 @@ class BertSelfAttention(nn.Module):
         self.value = nn.Linear(config.hidden_size, self.all_head_size)
 
         self.dropout = nn.Dropout(config.attention_probs_dropout_prob)
+        # Optional column-aware attention dropout (anchor / different / negative)
+        self.enable_column_attention_dropout = getattr(config, "enable_column_attention_dropout", False)
+        if self.enable_column_attention_dropout and getattr(config, "num_columns", 1) > 1:
+            p_anchor = getattr(config, "attention_dropout_anchor_prob", config.attention_probs_dropout_prob)
+            p_diff = getattr(
+                config, "attention_dropout_different_prob", config.attention_probs_dropout_prob
+            )
+            p_neg = getattr(
+                config, "attention_dropout_negative_prob", config.attention_probs_dropout_prob
+            )
+            self.attn_dropout_anchor = nn.Dropout(p_anchor)
+            self.attn_dropout_different = nn.Dropout(p_diff)
+            self.attn_dropout_negative = nn.Dropout(p_neg)
         self.position_embedding_type = position_embedding_type or getattr(
             config, "position_embedding_type", "absolute"
         )
@@ -306,6 +338,7 @@ class BertSelfAttention(nn.Module):
         encoder_attention_mask: Optional[torch.FloatTensor] = None,
         past_key_value: Optional[Tuple[Tuple[torch.FloatTensor]]] = None,
         output_attentions: Optional[bool] = False,
+        column_type_ids: Optional[torch.LongTensor] = None,
     ) -> Tuple[torch.Tensor]:
         mixed_query_layer = self.query(hidden_states)
 
@@ -378,9 +411,39 @@ class BertSelfAttention(nn.Module):
         # Normalize the attention scores to probabilities.
         attention_probs = nn.functional.softmax(attention_scores, dim=-1)
 
-        # This is actually dropping out entire tokens to attend to, which might
-        # seem a bit unusual, but is taken from the original Transformer paper.
-        attention_probs = self.dropout(attention_probs)
+        # Column-aware attention dropout (anchor / different / negative) if enabled.
+        if (
+            self.enable_column_attention_dropout
+            and column_type_ids is not None
+            and getattr(self, "attn_dropout_anchor", None) is not None
+        ):
+            # column_type_ids: [batch] or [batch, 1, 1, 1] or [batch, seq_len]
+            if column_type_ids.dim() > 1:
+                # Reduce to [batch] using first position
+                column_type_ids = column_type_ids.view(column_type_ids.size(0), -1)[:, 0]
+            # attention_probs shape: [batch, num_heads, seq_len, seq_len]
+            bsz = attention_probs.size(0)
+            assert bsz == column_type_ids.size(0), "column_type_ids batch dim must match attention_probs"
+
+            # 构造每一列的布尔掩码
+            col = column_type_ids
+            mask_anchor = (col == 0).view(bsz, 1, 1, 1)
+            mask_diff = (col == 1).view(bsz, 1, 1, 1)
+            mask_neg = (col == 2).view(bsz, 1, 1, 1)
+
+            probs_anchor = self.attn_dropout_anchor(attention_probs) * mask_anchor
+            probs_diff = self.attn_dropout_different(attention_probs) * mask_diff
+            probs_neg = self.attn_dropout_negative(attention_probs) * mask_neg
+
+            # 对于未被上述掩码覆盖的 batch（例如列数不足 3），回退到默认 dropout
+            mask_any = mask_anchor | mask_diff | mask_neg
+            probs_default = self.dropout(attention_probs) * (~mask_any)
+
+            attention_probs = probs_anchor + probs_diff + probs_neg + probs_default
+        else:
+            # This is actually dropping out entire tokens to attend to, which might
+            # seem a bit unusual, but is taken from the original Transformer paper.
+            attention_probs = self.dropout(attention_probs)
 
         # Mask heads if we want to
         if head_mask is not None:
@@ -447,6 +510,7 @@ class BertAttention(nn.Module):
         encoder_attention_mask: Optional[torch.FloatTensor] = None,
         past_key_value: Optional[Tuple[Tuple[torch.FloatTensor]]] = None,
         output_attentions: Optional[bool] = False,
+        column_type_ids: Optional[torch.LongTensor] = None,
     ) -> Tuple[torch.Tensor]:
         self_outputs = self.self(
             hidden_states,
@@ -456,6 +520,7 @@ class BertAttention(nn.Module):
             encoder_attention_mask,
             past_key_value,
             output_attentions,
+            column_type_ids=column_type_ids,
         )
         attention_output = self.output(self_outputs[0], hidden_states)
         outputs = (attention_output,) + self_outputs[1:]  # add attentions if we output them
@@ -515,6 +580,7 @@ class BertLayer(nn.Module):
         encoder_attention_mask: Optional[torch.FloatTensor] = None,
         past_key_value: Optional[Tuple[Tuple[torch.FloatTensor]]] = None,
         output_attentions: Optional[bool] = False,
+        column_type_ids: Optional[torch.LongTensor] = None,
     ) -> Tuple[torch.Tensor]:
         # decoder uni-directional self-attention cached key/values tuple is at positions 1,2
         self_attn_past_key_value = past_key_value[:2] if past_key_value is not None else None
@@ -524,6 +590,7 @@ class BertLayer(nn.Module):
             head_mask,
             output_attentions=output_attentions,
             past_key_value=self_attn_past_key_value,
+            column_type_ids=column_type_ids,
         )
         attention_output = self_attention_outputs[0]
 
@@ -631,6 +698,7 @@ class BertEncoder(nn.Module):
                     layer_head_mask,
                     encoder_hidden_states,
                     encoder_attention_mask,
+                    # column_type_ids is not used inside BertLayer.custom_forward; keep API minimal for now
                 )
             else:
                 layer_outputs = layer_module(
@@ -641,6 +709,8 @@ class BertEncoder(nn.Module):
                     encoder_attention_mask,
                     past_key_value,
                     output_attentions,
+                    # column_type_ids is currently not passed through encoder; column-aware dropout
+                    # operates only at the batch-aggregated level in this implementation.
                 )
 
             hidden_states = layer_outputs[0]
@@ -1056,10 +1126,22 @@ class BertModel(BertPreTrainedModel):
         # and head_mask is converted to shape [num_hidden_layers x batch x num_heads x seq_length x seq_length]
         head_mask = self.get_head_mask(head_mask, self.config.num_hidden_layers)
 
+        # Optional column-type ids: used when inputs are organized as [anchor, different, negative] in batch dim.
+        column_type_ids = None
+        if getattr(self.config, "enable_column_type_embeddings", False) and getattr(self.config, "num_columns", 1) > 1:
+            num_columns = getattr(self.config, "num_columns", 3)
+            if batch_size % num_columns == 0:
+                rows_per_col = batch_size // num_columns
+                col_ids = []
+                for c in range(num_columns):
+                    col_ids.extend([c] * rows_per_col)
+                column_type_ids = torch.tensor(col_ids, device=device, dtype=torch.long)
+
         embedding_output = self.embeddings(
             input_ids=input_ids,
             position_ids=position_ids,
             token_type_ids=token_type_ids,
+            column_type_ids=column_type_ids,
             inputs_embeds=inputs_embeds,
             past_key_values_length=past_key_values_length,
         )
