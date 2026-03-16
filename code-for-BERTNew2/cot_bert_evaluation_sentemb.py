@@ -1,6 +1,10 @@
 import re
 import sys
 import os
+import json
+from datetime import datetime
+
+import yaml
 sys.path.append('..') 
 
 import tqdm
@@ -51,6 +55,60 @@ def print_table(task_names, scores):
     tb.add_row(scores)
     print(tb)
 
+
+def save_experiment_log(args, model_args, config, results):
+    """
+    只保存「训练时生成的 train_config_full.json」和「本次评估结果」到 JSON，
+    方便后续回顾与复现。
+    """
+    args_dict = vars(args) if args is not None else {}
+    results_dict = results if isinstance(results, dict) else {}
+
+    # 1. 从当前模型目录读取训练时保存的 train_config_full.json
+    model_dir = args_dict.get("model_name_or_path")
+    train_config_full_path = None
+    train_config_full = None
+
+    if isinstance(model_dir, str) and model_dir:
+        train_config_full_path = os.path.join(model_dir, "train_config_full.json")
+        if os.path.isfile(train_config_full_path):
+            try:
+                with open(train_config_full_path, "r", encoding="utf-8") as f:
+                    train_config_full = json.load(f)
+            except Exception as e:
+                print(f"[EvalLog] Failed to load train_config_full.json from '{train_config_full_path}': {e}")
+        else:
+            print(f"[EvalLog] train_config_full.json not found in model dir: {train_config_full_path}")
+
+    # 2. 只组织需要的信息：训练 full 配置 + 评估结果
+    record = {
+        "timestamp": datetime.now().isoformat(),
+        "script": os.path.basename(__file__),
+        "model_dir": model_dir,
+        "train_config_full_path": train_config_full_path,
+        "train_config_full": train_config_full,
+        "results": results_dict,
+    }
+
+    # 3. 确定保存路径
+    save_dir = os.path.join("..", "result", "CoT-Bert", "eval_logs")
+    os.makedirs(save_dir, exist_ok=True)
+
+    # 文件名中加入模式信息，便于区分不同评估模式
+    mode = args_dict.get("mode", "unknown")
+    time_str = datetime.now().strftime("%Y%m%d-%H%M%S")
+
+    filename = f"eval_{mode}_{time_str}.json"
+    save_path = os.path.join(save_dir, filename)
+
+    # 3. 写入 JSON 文件
+    try:
+        with open(save_path, "w", encoding="utf-8") as f:
+            json.dump(record, f, ensure_ascii=False, indent=2)
+        print(f"[EvalLog] Saved experiment log to: {save_path}")
+    except Exception as e:
+        print(f"[EvalLog] Failed to save experiment log: {e}")
+
 def get_platform_eval_config_file():
     """根据平台返回对应的评估配置文件"""
     platform_type = detect_platform()
@@ -87,6 +145,12 @@ def main():
                         choices=['sts'],
                         default='sts',
                         help="What set of tasks to evaluate on. Currently only supports 'sts'")
+    parser.add_argument(
+        "--train_config",
+        type=str,
+        default=None,
+        help="Path to the training config (e.g., CoT-BERT train yaml) used to obtain this checkpoint.",
+    )
 
     args = parser.parse_args(args_list)
 
@@ -255,6 +319,9 @@ def main():
     task_names.append("Avg.")
     scores.append("%.2f" % (sum([float(score) for score in scores]) / len(scores)))
     print_table(task_names, scores)
+
+    # 10. 保存本次实验的配置与结果，便于后续复现实验
+    save_experiment_log(args=args, model_args=model_args, config=config, results=results)
 
 if __name__ == "__main__":
     main()

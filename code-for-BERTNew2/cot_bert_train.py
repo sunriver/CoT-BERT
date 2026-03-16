@@ -1,14 +1,15 @@
 import sys 
 import csv
+import json
 sys.path.append('..') 
 
 import os
 import torch
 import logging
 import transformers
+from dataclasses import dataclass, field, asdict
 from datasets import load_dataset, Dataset
-from dataclasses import dataclass, field
-from typing import Optional, Union, List, Dict
+from typing import Optional, Union, List, Dict, Any
 
 from transformers import (
     set_seed,
@@ -50,6 +51,20 @@ platform_config = setup_device_config()
 logger = getMyLogger(__name__)
 MODEL_CONFIG_CLASSES = list(MODEL_FOR_MASKED_LM_MAPPING.keys())
 MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
+
+
+def _to_json_serializable(obj: Any) -> Any:
+    """将 dataclass / 复杂对象转为可 JSON 序列化的 dict 或标量。"""
+    if obj is None or isinstance(obj, (bool, int, float, str)):
+        return obj
+    if isinstance(obj, (list, tuple)):
+        return [_to_json_serializable(x) for x in obj]
+    if isinstance(obj, dict):
+        return {k: _to_json_serializable(v) for k, v in obj.items()}
+    if hasattr(obj, "__dataclass_fields__"):
+        return _to_json_serializable(asdict(obj))
+    # Enum、Path 等转为字符串
+    return str(obj)
 
 @dataclass
 class ModelArguments:
@@ -565,6 +580,22 @@ def main():
             f"Output directory ({training_args.output_dir}) already exists and is not empty."
             "Use --overwrite_output_dir to overcome."
         )
+
+    # 将本次训练用到的全部参数保存到 output_dir，便于评估与复现
+    if is_main_process(training_args.local_rank):
+        os.makedirs(training_args.output_dir, exist_ok=True)
+        full_config = {
+            "model_args": _to_json_serializable(model_args),
+            "data_args": _to_json_serializable(data_args),
+            "training_args": _to_json_serializable(training_args),
+        }
+        full_config_path = os.path.join(training_args.output_dir, "train_config_full.json")
+        try:
+            with open(full_config_path, "w", encoding="utf-8") as f:
+                json.dump(full_config, f, ensure_ascii=False, indent=2)
+            logger.info("Saved full training config to %s", full_config_path)
+        except Exception as e:
+            logger.warning("Failed to save train_config_full.json: %s", e)
 
     # Setup logging
     logging.basicConfig(
