@@ -1,5 +1,5 @@
 model_name_or_path: "/data/output/workspace_gpu2/pretrain_models/bert-base-uncased"
-train_file: "../data/hard_negatives_masked.tsv"
+train_file: "../data/wiki1m_for_simcse.txt"
 output_dir: "../result/CoT-Bert"
 num_train_epochs: 1
 per_device_train_batch_size: 16
