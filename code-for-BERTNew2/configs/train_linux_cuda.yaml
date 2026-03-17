@@ -46,6 +46,8 @@ enable_column_attention_dropout: true
 attention_dropout_anchor_prob: 0.1
 attention_dropout_different_prob: 0.2
 attention_dropout_negative_prob: 0.2
+# 仅最后 N 层使用列感知 attention dropout，前几层用统一 dropout；12 表示全部层（默认）
+column_attention_dropout_last_n_layers: 12
 
 mask_embedding_sentence: true
 mask_num: 2

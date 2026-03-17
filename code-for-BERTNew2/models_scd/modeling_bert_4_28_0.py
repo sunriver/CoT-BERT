@@ -677,6 +677,9 @@ class BertEncoder(nn.Module):
                 use_cache = False
 
         next_decoder_cache = () if use_cache else None
+        num_layers = len(self.layer)
+        last_n = getattr(self.config, "column_attention_dropout_last_n_layers", num_layers)
+
         for i, layer_module in enumerate(self.layer):
             if output_hidden_states:
                 all_hidden_states = all_hidden_states + (hidden_states,)
@@ -684,16 +687,19 @@ class BertEncoder(nn.Module):
             layer_head_mask = head_mask[i] if head_mask is not None else None
             past_key_value = past_key_values[i] if past_key_values is not None else None
 
+            # Only last N layers get column_type_ids (column-aware attention dropout); earlier layers get None.
+            ids_for_this_layer = column_type_ids if (i >= num_layers - last_n) else None
+
             if self.gradient_checkpointing and self.training:
 
-                def create_custom_forward(module):
+                def create_custom_forward(module, col_ids):
                     def custom_forward(*inputs):
-                        return module(*inputs, past_key_value, output_attentions, column_type_ids)
+                        return module(*inputs, past_key_value, output_attentions, col_ids)
 
                     return custom_forward
 
                 layer_outputs = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(layer_module),
+                    create_custom_forward(layer_module, ids_for_this_layer),
                     hidden_states,
                     attention_mask,
                     layer_head_mask,
@@ -709,7 +715,7 @@ class BertEncoder(nn.Module):
                     encoder_attention_mask,
                     past_key_value,
                     output_attentions,
-                    column_type_ids,
+                    ids_for_this_layer,
                 )
 
             hidden_states = layer_outputs[0]

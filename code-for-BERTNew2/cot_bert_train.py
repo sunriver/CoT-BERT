@@ -162,6 +162,10 @@ class ModelArguments:
         default=0.1,
         metadata={"help": "Attention dropout prob for negative column."},
     )
+    column_attention_dropout_last_n_layers: int = field(
+        default=12,
+        metadata={"help": "Only the last N layers use column-aware attention dropout; earlier layers use default dropout. Default 12 = all layers."},
+    )
     hard_negative_weight: float = field(
         default=0,
         metadata={
@@ -696,6 +700,9 @@ def main():
     )
     config.attention_dropout_negative_prob = getattr(
         model_args, "attention_dropout_negative_prob", config.attention_probs_dropout_prob
+    )
+    config.column_attention_dropout_last_n_layers = getattr(
+        model_args, "column_attention_dropout_last_n_layers", 12
     )
 
     tokenizer_kwargs = {
