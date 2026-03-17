@@ -663,6 +663,7 @@ class BertEncoder(nn.Module):
         output_attentions: Optional[bool] = False,
         output_hidden_states: Optional[bool] = False,
         return_dict: Optional[bool] = True,
+        column_type_ids: Optional[torch.LongTensor] = None,
     ) -> Union[Tuple[torch.Tensor], BaseModelOutputWithPastAndCrossAttentions]:
         all_hidden_states = () if output_hidden_states else None
         all_self_attentions = () if output_attentions else None
@@ -687,7 +688,7 @@ class BertEncoder(nn.Module):
 
                 def create_custom_forward(module):
                     def custom_forward(*inputs):
-                        return module(*inputs, past_key_value, output_attentions)
+                        return module(*inputs, past_key_value, output_attentions, column_type_ids)
 
                     return custom_forward
 
@@ -698,7 +699,6 @@ class BertEncoder(nn.Module):
                     layer_head_mask,
                     encoder_hidden_states,
                     encoder_attention_mask,
-                    # column_type_ids is not used inside BertLayer.custom_forward; keep API minimal for now
                 )
             else:
                 layer_outputs = layer_module(
@@ -709,8 +709,7 @@ class BertEncoder(nn.Module):
                     encoder_attention_mask,
                     past_key_value,
                     output_attentions,
-                    # column_type_ids is currently not passed through encoder; column-aware dropout
-                    # operates only at the batch-aggregated level in this implementation.
+                    column_type_ids,
                 )
 
             hidden_states = layer_outputs[0]
@@ -1156,6 +1155,7 @@ class BertModel(BertPreTrainedModel):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
+            column_type_ids=column_type_ids,
         )
         sequence_output = encoder_outputs[0]
         pooled_output = self.pooler(sequence_output) if self.pooler is not None else None
