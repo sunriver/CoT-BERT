@@ -2,8 +2,8 @@ model_name_or_path: "/data/output/workspace_gpu2/pretrain_models/bert-base-uncas
 train_file: "../data/wiki1m_for_simcse.txt"
 output_dir: "../result/CoT-Bert"
 num_train_epochs: 1
-per_device_train_batch_size: 16
-gradient_accumulation_steps: 4
+per_device_train_batch_size: 8
+gradient_accumulation_steps: 8
 learning_rate: 1e-5
 max_seq_length: 32
 evaluation_strategy: steps
@@ -47,7 +47,7 @@ attention_dropout_anchor_prob: 0.1
 attention_dropout_different_prob: 0.2
 attention_dropout_negative_prob: 0.2
 # 仅最后 N 层使用列感知 attention dropout，前几层用统一 dropout；12 表示全部层（默认）
-column_attention_dropout_last_n_layers: 12
+column_attention_dropout_last_n_layers: 1
 
 mask_embedding_sentence: true
 mask_num: 2

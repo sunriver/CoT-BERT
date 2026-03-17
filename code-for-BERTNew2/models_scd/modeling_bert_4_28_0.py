@@ -411,7 +411,17 @@ class BertSelfAttention(nn.Module):
         # Normalize the attention scores to probabilities.
         attention_probs = nn.functional.softmax(attention_scores, dim=-1)
 
-        # Column-aware attention dropout (anchor / different / negative) if enabled.
+        # Always apply standard attention dropout on probabilities (no column-awareness here).
+        # 列感知移动到 context_layer 上，这里保持与标准 BERT 一致。
+        attention_probs = self.dropout(attention_probs)
+
+        # Mask heads if we want to
+        if head_mask is not None:
+            attention_probs = attention_probs * head_mask
+
+        context_layer = torch.matmul(attention_probs, value_layer)
+
+        # Column-aware dropout on context representations (anchor / different / negative) if enabled.
         if (
             self.enable_column_attention_dropout
             and column_type_ids is not None
@@ -421,35 +431,23 @@ class BertSelfAttention(nn.Module):
             if column_type_ids.dim() > 1:
                 # Reduce to [batch] using first position
                 column_type_ids = column_type_ids.view(column_type_ids.size(0), -1)[:, 0]
-            # attention_probs shape: [batch, num_heads, seq_len, seq_len]
-            bsz = attention_probs.size(0)
-            assert bsz == column_type_ids.size(0), "column_type_ids batch dim must match attention_probs"
+            # context_layer shape: [batch, num_heads, seq_len, head_dim]
+            bsz = context_layer.size(0)
+            assert bsz == column_type_ids.size(0), "column_type_ids batch dim must match context_layer"
 
-            # 构造每一列的布尔掩码
             col = column_type_ids
             mask_anchor = (col == 0).view(bsz, 1, 1, 1)
             mask_diff = (col == 1).view(bsz, 1, 1, 1)
             mask_neg = (col == 2).view(bsz, 1, 1, 1)
 
-            probs_anchor = self.attn_dropout_anchor(attention_probs) * mask_anchor
-            probs_diff = self.attn_dropout_different(attention_probs) * mask_diff
-            probs_neg = self.attn_dropout_negative(attention_probs) * mask_neg
+            ctx_anchor = self.attn_dropout_anchor(context_layer) * mask_anchor
+            ctx_diff = self.attn_dropout_different(context_layer) * mask_diff
+            ctx_neg = self.attn_dropout_negative(context_layer) * mask_neg
 
-            # 对于未被上述掩码覆盖的 batch（例如列数不足 3），回退到默认 dropout
             mask_any = mask_anchor | mask_diff | mask_neg
-            probs_default = self.dropout(attention_probs) * (~mask_any)
+            ctx_default = self.dropout(context_layer) * (~mask_any)
 
-            attention_probs = probs_anchor + probs_diff + probs_neg + probs_default
-        else:
-            # This is actually dropping out entire tokens to attend to, which might
-            # seem a bit unusual, but is taken from the original Transformer paper.
-            attention_probs = self.dropout(attention_probs)
-
-        # Mask heads if we want to
-        if head_mask is not None:
-            attention_probs = attention_probs * head_mask
-
-        context_layer = torch.matmul(attention_probs, value_layer)
+            context_layer = ctx_anchor + ctx_diff + ctx_neg + ctx_default
 
         context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
         new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
