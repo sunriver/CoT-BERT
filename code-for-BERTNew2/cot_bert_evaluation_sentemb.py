@@ -317,10 +317,33 @@ def main():
             scores.append("0.00")
     
     task_names.append("Avg.")
-    scores.append("%.2f" % (sum([float(score) for score in scores]) / len(scores)))
+    avg_score = sum([float(score) for score in scores]) / len(scores) if len(scores) > 0 else 0.0
+    scores.append("%.2f" % avg_score)
     print_table(task_names, scores)
 
-    # 10. 保存本次实验的配置与结果，便于后续复现实验
+    # 10. 将表格汇总信息一并写入 results，方便日志与后续分析
+    # 结构示例：
+    # "summary_table": {
+    #   "mode": "test",
+    #   "tasks": ["STS12", ..., "SICKRelatedness", "Avg."],
+    #   "scores": [79.12, ..., 84.56]
+    # }
+    try:
+        summary_scores = []
+        for s in scores:
+            try:
+                summary_scores.append(float(s))
+            except (TypeError, ValueError):
+                summary_scores.append(None)
+        results["summary_table"] = {
+            "mode": args.mode,
+            "tasks": task_names,
+            "scores": summary_scores,
+        }
+    except Exception as e:
+        print(f"[EvalLog] Failed to build summary_table for logging: {e}")
+    
+    # 11. 保存本次实验的配置与结果，便于后续复现实验
     save_experiment_log(args=args, model_args=model_args, config=config, results=results)
 
 if __name__ == "__main__":
