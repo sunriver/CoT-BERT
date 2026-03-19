@@ -80,6 +80,64 @@ def save_experiment_log(args, model_args, config, results):
         else:
             print(f"[EvalLog] train_config_full.json not found in model dir: {train_config_full_path}")
 
+    # 1.5 从训练目录读取 trainer_state.json（记录训练关键点：best checkpoint、best metric 等）
+    trainer_state_summary = None
+    if isinstance(model_dir, str) and model_dir:
+        trainer_state_path = os.path.join(model_dir, "trainer_state.json")
+        if os.path.isfile(trainer_state_path):
+            try:
+                with open(trainer_state_path, "r", encoding="utf-8") as f:
+                    trainer_state = json.load(f)
+
+                def _extract_step_from_ckpt(ckpt: str):
+                    # ckpt 常见形如 ".../checkpoint-1234"
+                    if not isinstance(ckpt, str):
+                        return None
+                    if "checkpoint-" not in ckpt:
+                        return None
+                    try:
+                        step_str = ckpt.split("checkpoint-")[-1].split("/")[0]
+                        return int(step_str)
+                    except Exception:
+                        return None
+
+                best_ckpt = trainer_state.get("best_model_checkpoint", None)
+                best_step = _extract_step_from_ckpt(best_ckpt)
+
+                log_history = trainer_state.get("log_history", [])
+                if not isinstance(log_history, list):
+                    log_history = []
+
+                # 只保留最后若干条日志，避免日志过大
+                last_log_history = log_history[-5:] if len(log_history) >= 5 else log_history
+
+                # 尝试在 log_history 中定位 best checkpoint 对应的 eval_* 指标条目
+                best_eval_entry = None
+                if best_step is not None and log_history:
+                    for entry in reversed(log_history):
+                        if not isinstance(entry, dict):
+                            continue
+                        step_val = entry.get("step", entry.get("global_step", None))
+                        if step_val == best_step:
+                            eval_keys = {k: v for k, v in entry.items() if isinstance(k, str) and k.startswith("eval_")}
+                            if eval_keys:
+                                best_eval_entry = {"step": step_val, "eval_metrics": eval_keys}
+                            else:
+                                best_eval_entry = {"step": step_val}
+                            break
+
+                trainer_state_summary = {
+                    "global_step": trainer_state.get("global_step", None),
+                    "epoch": trainer_state.get("epoch", None),
+                    "best_model_checkpoint": best_ckpt,
+                    "best_model_checkpoint_step": best_step,
+                    "best_metric": trainer_state.get("best_metric", None),
+                    "last_log_history": last_log_history,
+                    "best_eval_entry": best_eval_entry,
+                }
+            except Exception as e:
+                print(f"[EvalLog] Failed to load trainer_state.json from '{trainer_state_path}': {e}")
+
     # 2. 只组织需要的信息：训练 full 配置 + 评估结果
     record = {
         "timestamp": datetime.now().isoformat(),
@@ -87,6 +145,7 @@ def save_experiment_log(args, model_args, config, results):
         "model_dir": model_dir,
         "train_config_full_path": train_config_full_path,
         "train_config_full": train_config_full,
+        "trainer_state_summary": trainer_state_summary,
         "results": results_dict,
     }
 
