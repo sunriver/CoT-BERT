@@ -17,6 +17,7 @@ from prettytable import PrettyTable
 from transformers import AutoConfig, AutoTokenizer
 
 from cot_bert_model import BertForCL, RobertaForCL
+from git_repo_info import get_git_repo_info
 from lmf_log_util import getMyLogger
 from parse_args_util import load_configs
 
@@ -58,7 +59,7 @@ def print_table(task_names, scores):
 
 def save_experiment_log(args, model_args, config, results):
     """
-    只保存「训练时生成的 train_config_full.json」和「本次评估结果」到 JSON，
+    保存 train_config_full、trainer_state 摘要、Git 分支/commit、本次评估结果到 JSON，
     方便后续回顾与复现。
     """
     args_dict = vars(args) if args is not None else {}
@@ -138,6 +139,10 @@ def save_experiment_log(args, model_args, config, results):
             except Exception as e:
                 print(f"[EvalLog] Failed to load trainer_state.json from '{trainer_state_path}': {e}")
 
+    # 1.6 评估时代码仓库 Git 信息（以本脚本所在目录为 cwd）
+    _script_dir = os.path.dirname(os.path.abspath(__file__))
+    git_repo_info = get_git_repo_info(_script_dir)
+
     # 2. 只组织需要的信息：训练 full 配置 + 评估结果
     record = {
         "timestamp": datetime.now().isoformat(),
@@ -146,6 +151,7 @@ def save_experiment_log(args, model_args, config, results):
         "train_config_full_path": train_config_full_path,
         "train_config_full": train_config_full,
         "trainer_state_summary": trainer_state_summary,
+        "git": git_repo_info,
         "results": results_dict,
     }
 

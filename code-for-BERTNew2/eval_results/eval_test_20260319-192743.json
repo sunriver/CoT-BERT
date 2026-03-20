@@ -1,0 +1,694 @@
+{
+  "timestamp": "2026-03-19T19:27:43.267976",
+  "script": "cot_bert_evaluation_sentemb.py",
+  "model_dir": "../result/CoT-Bert",
+  "train_config_full_path": "../result/CoT-Bert/train_config_full.json",
+  "train_config_full": {
+    "model_args": {
+      "model_name_or_path": "/data/output/workspace_gpu4/pretrain_models/bert-base-uncased",
+      "model_type": null,
+      "config_name": null,
+      "tokenizer_name": null,
+      "cache_dir": null,
+      "use_fast_tokenizer": true,
+      "model_revision": "main",
+      "use_auth_token": false,
+      "temp": 0.05,
+      "scd_temp": 0.08,
+      "enable_custom_dropout_for_last_column": false,
+      "hidden_dropout_prob_for_last_column": 0.1,
+      "num_columns": 3,
+      "dropout_different_prob": 0.1,
+      "dropout_negative_prob": 0.25,
+      "hard_negative_weight": 0,
+      "mlp_only_train": true,
+      "two_bert": false,
+      "freeze_layers": "",
+      "freeze_lm_head": false,
+      "freeze_embedding": false,
+      "label_smoothing": false,
+      "two_bert_one_freeze": false,
+      "mask_embedding_sentence_infomax": false,
+      "mask_embedding_sentence_template": "*cls*_The_sentence_of_\"*sent_0*\"_means_*mask*_,_so_it_can_be_summarized_as_*mask*_._*sep+*",
+      "mask_embedding_sentence_bs": " The sentence of \"",
+      "mask_embedding_sentence_es": "\" means [MASK] , so it can be summarized as [MASK] . ",
+      "mask_embedding_sentence_with_mlm": false,
+      "mask_embedding_sentence_different_template": "*cls*_Regarding_the_sentence_of_\"*sent_0*\"_,_its_core_idea_is_*mask*_,_which_sums_up_as_*mask*_._*sep+*",
+      "mask_embedding_sentence_negative_template": "*cls*_The_sentence_:_\"*sent_0*\"_does_not_mean_*mask*_,_so_it_can_not_be_summarized_as_*mask*_._*sep+*",
+      "mask_embedding_sentence_different_negative_template": "",
+      "mask_embedding_sentence_delta_freeze": false,
+      "mask_embedding_sentence_delta_cross_stream": false,
+      "mask_embedding_sentence_delta_no_position": false,
+      "mask_embedding_sentence_delta": true,
+      "mask_embedding_sentence_delta_cotrain": false,
+      "mask_embedding_sentence_delta_no_delta_eval": true,
+      "mask_embedding_sentence_do_oxford": false,
+      "mask_embedding_sentence": true,
+      "mask_embedding_sentence_add_period": false,
+      "mask_embedding_sentence_num_masks": 1,
+      "mask_num": 2,
+      "mask_embedding_sentence_avg": false,
+      "mask_embedding_sentence_add_template_in_batch": false,
+      "mask_embedding_sentence_autoprompt_random_init": false,
+      "mask_embedding_sentence_autoprompt_continue_training": "",
+      "mask_embedding_sentence_autoprompt": false,
+      "mask_embedding_sentence_autoprompt_continue_training_as_positive": false,
+      "mask_embedding_sentence_autoprompt_freeze_prompt": false,
+      "mask_embedding_sentence_org_mlp": false,
+      "only_embedding_training": false,
+      "roberta_with_special_token": false,
+      "roberta_auto_weight_special_token": false,
+      "roberta_special_token_as_cls": false,
+      "remove_last_layer": false,
+      "dot_sim": false,
+      "norm_instead_temp": false,
+      "add_pseudo_instances": false,
+      "add_pseudo_instances_from_other_model": false,
+      "only_negative_loss": false,
+      "untie_weights_roberta": false,
+      "token_classification": false,
+      "add_rdrop": false,
+      "asymmetric_attention": false
+    },
+    "data_args": {
+      "dataset_name": null,
+      "dataset_config_name": null,
+      "overwrite_cache": false,
+      "validation_split_percentage": 5,
+      "preprocessing_num_workers": 100,
+      "train_file": "../data/wiki1m_for_simcse.txt",
+      "max_seq_length": 32,
+      "pad_to_max_length": false,
+      "mlm_probability": 0.15
+    },
+    "training_args": {
+      "output_dir": "../result/CoT-Bert",
+      "overwrite_output_dir": true,
+      "do_train": true,
+      "do_eval": true,
+      "do_predict": false,
+      "evaluation_strategy": "steps",
+      "prediction_loss_only": false,
+      "per_device_train_batch_size": 16,
+      "per_device_eval_batch_size": 8,
+      "per_gpu_train_batch_size": null,
+      "per_gpu_eval_batch_size": null,
+      "gradient_accumulation_steps": 4,
+      "eval_accumulation_steps": null,
+      "eval_delay": 0,
+      "learning_rate": 1e-05,
+      "weight_decay": 0.0,
+      "adam_beta1": 0.9,
+      "adam_beta2": 0.999,
+      "adam_epsilon": 1e-08,
+      "max_grad_norm": 1.0,
+      "num_train_epochs": 1.0,
+      "max_steps": -1,
+      "lr_scheduler_type": "linear",
+      "warmup_ratio": 0.0,
+      "warmup_steps": 0,
+      "log_level": "passive",
+      "log_level_replica": "warning",
+      "log_on_each_node": true,
+      "logging_dir": "../result/CoT-Bert/runs/Mar19_10-24-09_develop-122-vctask-gpu-0",
+      "logging_strategy": "steps",
+      "logging_first_step": false,
+      "logging_steps": 10,
+      "logging_nan_inf_filter": true,
+      "save_strategy": "steps",
+      "save_steps": 100,
+      "save_total_limit": 1,
+      "save_safetensors": false,
+      "save_on_each_node": false,
+      "no_cuda": false,
+      "use_mps_device": false,
+      "seed": 0,
+      "data_seed": null,
+      "jit_mode_eval": false,
+      "use_ipex": false,
+      "bf16": false,
+      "fp16": false,
+      "fp16_opt_level": "O1",
+      "half_precision_backend": "auto",
+      "bf16_full_eval": false,
+      "fp16_full_eval": false,
+      "tf32": null,
+      "local_rank": -1,
+      "xpu_backend": null,
+      "tpu_num_cores": null,
+      "tpu_metrics_debug": false,
+      "debug": [],
+      "dataloader_drop_last": true,
+      "eval_steps": 100,
+      "dataloader_num_workers": 0,
+      "past_index": -1,
+      "run_name": "../result/CoT-Bert",
+      "disable_tqdm": false,
+      "remove_unused_columns": true,
+      "label_names": null,
+      "load_best_model_at_end": true,
+      "metric_for_best_model": "stsb_spearman",
+      "greater_is_better": true,
+      "ignore_data_skip": false,
+      "sharded_ddp": [],
+      "fsdp": [],
+      "fsdp_min_num_params": 0,
+      "fsdp_config": {
+        "fsdp_min_num_params": 0,
+        "xla": false,
+        "xla_fsdp_grad_ckpt": false
+      },
+      "fsdp_transformer_layer_cls_to_wrap": null,
+      "deepspeed": null,
+      "label_smoothing_factor": 0.0,
+      "optim": "adamw_torch",
+      "optim_args": null,
+      "adafactor": false,
+      "group_by_length": false,
+      "length_column_name": "length",
+      "report_to": [],
+      "ddp_find_unused_parameters": null,
+      "ddp_bucket_cap_mb": null,
+      "dataloader_pin_memory": true,
+      "skip_memory_metrics": true,
+      "use_legacy_prediction_loop": false,
+      "push_to_hub": false,
+      "resume_from_checkpoint": null,
+      "hub_model_id": null,
+      "hub_strategy": "every_save",
+      "hub_token": null,
+      "hub_private_repo": false,
+      "gradient_checkpointing": false,
+      "include_inputs_for_metrics": false,
+      "fp16_backend": "auto",
+      "push_to_hub_model_id": null,
+      "push_to_hub_organization": null,
+      "push_to_hub_token": null,
+      "_n_gpu": 1,
+      "mp_parameters": "",
+      "auto_find_batch_size": false,
+      "full_determinism": false,
+      "torchdynamo": null,
+      "ray_scope": "last",
+      "ddp_timeout": 1800,
+      "torch_compile": false,
+      "torch_compile_backend": null,
+      "torch_compile_mode": null,
+      "eval_transfer": false
+    }
+  },
+  "trainer_state_summary": {
+    "global_step": 1600,
+    "epoch": 0.1024,
+    "best_model_checkpoint": "../result/CoT-Bert",
+    "best_model_checkpoint_step": null,
+    "best_metric": 0.8453550043452694,
+    "last_log_history": [
+      {
+        "epoch": 0.1,
+        "learning_rate": 8.9952e-06,
+        "loss": 0.0,
+        "step": 1570
+      },
+      {
+        "epoch": 0.1,
+        "learning_rate": 8.988800000000001e-06,
+        "loss": 0.0001,
+        "step": 1580
+      },
+      {
+        "epoch": 0.1,
+        "learning_rate": 8.9824e-06,
+        "loss": 0.0,
+        "step": 1590
+      },
+      {
+        "epoch": 0.1,
+        "learning_rate": 8.976e-06,
+        "loss": 0.0001,
+        "step": 1600
+      },
+      {
+        "epoch": 0.1,
+        "eval_avg_sts": 0.7750562369403051,
+        "eval_sickr_spearman": 0.7047574695353408,
+        "eval_stsb_spearman": 0.8453550043452694,
+        "step": 1600
+      }
+    ],
+    "best_eval_entry": null
+  },
+  "results": {
+    "STS12": {
+      "MSRpar": {
+        "pearson": [
+          0.5125019604397716,
+          1.8267390853227428e-51
+        ],
+        "spearman": [
+          0.5377986374314342,
+          1.9058647519482757e-57
+        ],
+        "nsamples": 750
+      },
+      "MSRvid": {
+        "pearson": [
+          0.887062640418754,
+          2.642951277927849e-253
+        ],
+        "spearman": [
+          0.8950118369285556,
+          1.7628625288501695e-264
+        ],
+        "nsamples": 750
+      },
+      "SMTeuroparl": {
+        "pearson": [
+          0.4856692540265056,
+          1.5328753252796188e-28
+        ],
+        "spearman": [
+          0.6080871472121476,
+          9.3696198420724e-48
+        ],
+        "nsamples": 459
+      },
+      "surprise.OnWN": {
+        "pearson": [
+          0.7544358981011815,
+          6.544496688794149e-139
+        ],
+        "spearman": [
+          0.7032732179366749,
+          6.010192955929111e-113
+        ],
+        "nsamples": 750
+      },
+      "surprise.SMTnews": {
+        "pearson": [
+          0.7145844788159275,
+          1.3804510328540864e-63
+        ],
+        "spearman": [
+          0.6011623960472496,
+          1.4448599929284767e-40
+        ],
+        "nsamples": 399
+      },
+      "all": {
+        "pearson": {
+          "all": 0.7864446713718742,
+          "mean": 0.670850846360428,
+          "wmean": 0.6832502473827226
+        },
+        "spearman": {
+          "all": 0.6926949950082862,
+          "mean": 0.6690666471112123,
+          "wmean": 0.6824448409960512
+        }
+      }
+    },
+    "STS13": {
+      "FNWN": {
+        "pearson": [
+          0.5648526172070959,
+          2.538031463187762e-17
+        ],
+        "spearman": [
+          0.5553746788165037,
+          1.0961630426534816e-16
+        ],
+        "nsamples": 189
+      },
+      "headlines": {
+        "pearson": [
+          0.7987989768902884,
+          3.0427916498970665e-167
+        ],
+        "spearman": [
+          0.8093264465721146,
+          4.970274015728114e-175
+        ],
+        "nsamples": 750
+      },
+      "OnWN": {
+        "pearson": [
+          0.8793268991076916,
+          3.0022106915559083e-182
+        ],
+        "spearman": [
+          0.8552105305903906,
+          1.0903542411923977e-161
+        ],
+        "nsamples": 561
+      },
+      "all": {
+        "pearson": {
+          "all": 0.8162640777682943,
+          "mean": 0.7476594977350253,
+          "wmean": 0.799439178479515
+        },
+        "spearman": {
+          "all": 0.8288235249908992,
+          "mean": 0.739970551993003,
+          "wmean": 0.794489171257743
+        }
+      }
+    },
+    "STS14": {
+      "deft-forum": {
+        "pearson": [
+          0.5044738215812131,
+          1.993033876449089e-30
+        ],
+        "spearman": [
+          0.5039226733659492,
+          2.357643840800684e-30
+        ],
+        "nsamples": 450
+      },
+      "deft-news": {
+        "pearson": [
+          0.8247656413209713,
+          9.259479267831522e-76
+        ],
+        "spearman": [
+          0.7914953982399829,
+          1.1028846723471085e-65
+        ],
+        "nsamples": 300
+      },
+      "headlines": {
+        "pearson": [
+          0.7808454023806861,
+          5.582573394281689e-155
+        ],
+        "spearman": [
+          0.7652676406180934,
+          3.0343107905431665e-145
+        ],
+        "nsamples": 750
+      },
+      "images": {
+        "pearson": [
+          0.8612574789429583,
+          4.202500649101911e-222
+        ],
+        "spearman": [
+          0.8313110138118961,
+          5.60127096748411e-193
+        ],
+        "nsamples": 750
+      },
+      "OnWN": {
+        "pearson": [
+          0.9035691791274536,
+          1.4593725001387845e-277
+        ],
+        "spearman": [
+          0.871778844229401,
+          5.30119760739552e-234
+        ],
+        "nsamples": 750
+      },
+      "tweet-news": {
+        "pearson": [
+          0.7633078696126231,
+          4.499924570434958e-144
+        ],
+        "spearman": [
+          0.6923903414114186,
+          3.936005724949019e-108
+        ],
+        "nsamples": 750
+      },
+      "all": {
+        "pearson": {
+          "all": 0.7939261966403267,
+          "mean": 0.7730365654943175,
+          "wmean": 0.7883140959081676
+        },
+        "spearman": {
+          "all": 0.751113851264917,
+          "mean": 0.7426943186127901,
+          "wmean": 0.7559399206772743
+        }
+      }
+    },
+    "STS15": {
+      "answers-forums": {
+        "pearson": [
+          0.7599923903908433,
+          8.587552629582503e-72
+        ],
+        "spearman": [
+          0.7716953698749535,
+          2.600869512078605e-75
+        ],
+        "nsamples": 375
+      },
+      "answers-students": {
+        "pearson": [
+          0.7450741494578252,
+          1.0699533662158663e-133
+        ],
+        "spearman": [
+          0.7503558594677352,
+          1.3079150225910984e-136
+        ],
+        "nsamples": 750
+      },
+      "belief": {
+        "pearson": [
+          0.8160322683571529,
+          8.023624945357658e-91
+        ],
+        "spearman": [
+          0.8392256374222045,
+          1.012262635032322e-100
+        ],
+        "nsamples": 375
+      },
+      "headlines": {
+        "pearson": [
+          0.8199934066059439,
+          1.9711932760905855e-183
+        ],
+        "spearman": [
+          0.8285599231951026,
+          1.3586754607565286e-190
+        ],
+        "nsamples": 750
+      },
+      "images": {
+        "pearson": [
+          0.8737100688459097,
+          2.6662154785974642e-236
+        ],
+        "spearman": [
+          0.8918009228999968,
+          7.335831108553215e-260
+        ],
+        "nsamples": 750
+      },
+      "all": {
+        "pearson": {
+          "all": 0.8234248055885287,
+          "mean": 0.8029604567315349,
+          "wmean": 0.8066974885709193
+        },
+        "spearman": {
+          "all": 0.8349196650771402,
+          "mean": 0.8163275425719985,
+          "wmean": 0.8190443023028535
+        }
+      }
+    },
+    "STS16": {
+      "answer-answer": {
+        "pearson": [
+          0.6991810743138168,
+          1.3523728691248802e-38
+        ],
+        "spearman": [
+          0.7005238132385857,
+          8.485957219767331e-39
+        ],
+        "nsamples": 254
+      },
+      "headlines": {
+        "pearson": [
+          0.7984609610135704,
+          2.347182062361493e-56
+        ],
+        "spearman": [
+          0.8197976321401441,
+          9.769484065190257e-62
+        ],
+        "nsamples": 249
+      },
+      "plagiarism": {
+        "pearson": [
+          0.8325110234247108,
+          2.1038569543013558e-60
+        ],
+        "spearman": [
+          0.8434932521425386,
+          1.8011879333980722e-63
+        ],
+        "nsamples": 230
+      },
+      "postediting": {
+        "pearson": [
+          0.8397698225398843,
+          3.936651188809225e-66
+        ],
+        "spearman": [
+          0.8657361919482404,
+          1.0654132452098594e-74
+        ],
+        "nsamples": 244
+      },
+      "question-question": {
+        "pearson": [
+          0.6887740464841968,
+          9.774213758863058e-31
+        ],
+        "spearman": [
+          0.7208107569289494,
+          8.562466357182922e-35
+        ],
+        "nsamples": 209
+      },
+      "all": {
+        "pearson": {
+          "all": 0.7607211887174352,
+          "mean": 0.7717393855552358,
+          "wmean": 0.7729712647307765
+        },
+        "spearman": {
+          "all": 0.7797927973888175,
+          "mean": 0.7900723292796916,
+          "wmean": 0.7908559746979779
+        }
+      }
+    },
+    "STSBenchmark": {
+      "train": {
+        "pearson": [
+          0.8060010564824134,
+          0.0
+        ],
+        "spearman": [
+          0.7866209719425435,
+          0.0
+        ],
+        "nsamples": 5749
+      },
+      "dev": {
+        "pearson": [
+          0.8379590467530583,
+          0.0
+        ],
+        "spearman": [
+          0.844769850166151,
+          0.0
+        ],
+        "nsamples": 1500
+      },
+      "test": {
+        "pearson": [
+          0.7980368968206585,
+          3.457990145292379e-305
+        ],
+        "spearman": [
+          0.8012272655536674,
+          2.023247461855884e-309
+        ],
+        "nsamples": 1379
+      },
+      "all": {
+        "pearson": {
+          "all": 0.8118281117960423,
+          "mean": 0.81399900001871,
+          "wmean": 0.8102841359020249
+        },
+        "spearman": {
+          "all": 0.8024512257657489,
+          "mean": 0.810872695887454,
+          "wmean": 0.7990648055337758
+        }
+      }
+    },
+    "SICKRelatedness": {
+      "train": {
+        "pearson": [
+          0.7925319936305094,
+          0.0
+        ],
+        "spearman": [
+          0.6917828667762431,
+          0.0
+        ],
+        "nsamples": 4500
+      },
+      "dev": {
+        "pearson": [
+          0.778908378365224,
+          5.595002431382366e-103
+        ],
+        "spearman": [
+          0.7067701167789019,
+          7.069593269188228e-77
+        ],
+        "nsamples": 500
+      },
+      "test": {
+        "pearson": [
+          0.7806396942551265,
+          0.0
+        ],
+        "spearman": [
+          0.6831485755970055,
+          0.0
+        ],
+        "nsamples": 4927
+      },
+      "all": {
+        "pearson": {
+          "all": 0.7859941978578107,
+          "mean": 0.7840266887502866,
+          "wmean": 0.78594338008612
+        },
+        "spearman": {
+          "all": 0.6882711023666033,
+          "mean": 0.6939005197173834,
+          "wmean": 0.6882523411754801
+        }
+      }
+    },
+    "summary_table": {
+      "mode": "test",
+      "tasks": [
+        "STS12",
+        "STS13",
+        "STS14",
+        "STS15",
+        "STS16",
+        "STSBenchmark",
+        "SICKRelatedness",
+        "Avg."
+      ],
+      "scores": [
+        69.27,
+        82.88,
+        75.11,
+        83.49,
+        77.98,
+        80.12,
+        68.31,
+        76.74
+      ]
+    }
+  }
+}
