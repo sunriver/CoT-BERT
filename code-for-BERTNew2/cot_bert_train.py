@@ -121,6 +121,12 @@ class ModelArguments:
             "help": "Temperature for Hard Negative softmax."
         }
     )
+    jepa_loss_weight: float = field(
+        default=0.1,
+        metadata={
+            "help": "Weight (gamma) for JEPA CoT Predictor loss: L_total = L2 + gamma * L_jepa."
+        }
+    )
     enable_custom_dropout_for_last_column: bool = field(
         default=False,
         metadata={"help": "Enable SAN-style custom dropout for last column in BertEmbeddings."},

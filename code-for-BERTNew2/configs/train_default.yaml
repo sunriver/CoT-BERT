@@ -29,6 +29,7 @@ overwrite_cache: false
 # CoT-BERT specific arguments
 temp: 0.05
 scd_temp: 0.05
+jepa_loss_weight: 0.1
 mlp_only_train: true
 
 # SAN-style custom dropout for last column (BertEmbeddings)

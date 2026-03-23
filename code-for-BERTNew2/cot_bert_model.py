@@ -33,6 +33,26 @@ class Similarity(nn.Module):
     def forward(self, x, y):
         return self.cos(x, y) / self.temp
 
+
+class CoTPredictor(nn.Module):
+    """
+    JEPA-style predictor: 从含义 MASK 表示预测总结 MASK 表示。
+    轻量 2 层 MLP，瓶颈维度为 hidden_size // 4。
+    """
+    def __init__(self, config):
+        super().__init__()
+        hidden = config.hidden_size
+        bottleneck = hidden // 4
+        self.net = nn.Sequential(
+            nn.Linear(hidden, bottleneck),
+            nn.GELU(),
+            nn.Linear(bottleneck, hidden),
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+
 def compute_constraint_loss(h1_anchor, h1_positive, h2_anchor, h2_positive, eps=1e-8):
     """
     计算约束项损失 L3
@@ -166,6 +186,11 @@ def cl_init(cls, config):
     
     cls.sim = Similarity(temp=cls.model_args.temp)
     cls.sim_scd = Similarity(temp=cls.model_args.scd_temp)
+
+    # JEPA CoT Predictor: 含义MASK → 总结MASK
+    cls.cot_predictor = CoTPredictor(config)
+    cls.jepa_loss_weight = getattr(cls.model_args, "jepa_loss_weight", 0.1)
+
     cls.init_weights()
 
 def cl_forward(cls,
@@ -443,7 +468,17 @@ def cl_forward(cls,
 
 
     loss = loss2
-    
+
+    # JEPA CoT Predictor Loss: 含义MASK预测总结MASK
+    if hasattr(cls, "cot_predictor") and cls.training:
+        pred_z1_m2 = cls.cot_predictor(z1_m1)
+        pred_z2_m2 = cls.cot_predictor(z2_m1)
+        jepa_loss = (
+            nn.functional.mse_loss(pred_z1_m2, z1_m2.detach())
+            + nn.functional.mse_loss(pred_z2_m2, z2_m2.detach())
+        ) * 0.5
+        loss = loss + cls.jepa_loss_weight * jepa_loss
+
     # 最终检查：如果总损失仍然是 NaN，设置为 0
     if torch.isnan(loss) or torch.isinf(loss):
         loss = torch.tensor(0.0, device=input_ids.device, requires_grad=True)
