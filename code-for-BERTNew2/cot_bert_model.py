@@ -95,16 +95,35 @@ def denoising(cls, encoder, template, type='pos-1', device='cuda', evaluation=Fa
         else:
             raise ValueError(f'unknown type {type}')
         
+        cls_id = getattr(cls, "cls_token_id", None)
+        sep_id = getattr(cls, "sep_token_id", None)
+        has_template_special_tokens = (
+            (cls_id is not None and cls_id in bs)
+            or (sep_id is not None and sep_id in bs)
+            or (cls_id is not None and cls_id in es)
+            or (sep_id is not None and sep_id in es)
+        )
+
         input_ids, attention_mask = [], []
         for i in range(cls.total_length - len(template) + 1):
-            input_ids.append([template[0]] + 
-                             bs + 
-                             [cls.pad_token_id] * i +
-                             es +
-                             [template[-1]] +
-                             [cls.pad_token_id] * (cls.total_length - len(template) - i))
-            
-            attention_mask.append([1] * (len(template) + i) + [0] * (cls.total_length - len(template) - i))
+            if has_template_special_tokens:
+                base_len = len(bs) + len(es)
+                input_ids.append(
+                    bs
+                    + [cls.pad_token_id] * i
+                    + es
+                    + [cls.pad_token_id] * (cls.total_length - base_len - i)
+                )
+                attention_mask.append([1] * (base_len + i) + [0] * (cls.total_length - base_len - i))
+            else:
+                input_ids.append([template[0]] + 
+                                 bs + 
+                                 [cls.pad_token_id] * i +
+                                 es +
+                                 [template[-1]] +
+                                 [cls.pad_token_id] * (cls.total_length - len(template) - i))
+                
+                attention_mask.append([1] * (len(template) + i) + [0] * (cls.total_length - len(template) - i))
 
         input_ids = torch.Tensor(input_ids).to(device).long()
         attention_mask = torch.Tensor(attention_mask).to(device).long()
@@ -492,22 +511,36 @@ def sentemb_forward(
         bs = torch.LongTensor(cls.bs).to(input_ids.device)
         es = torch.LongTensor(cls.es).to(input_ids.device)
 
+        cls_id = getattr(cls, "cls_token_id", None)
+        sep_id = getattr(cls, "sep_token_id", None)
+        has_template_special_tokens = (
+            (cls_id is not None and cls_id in cls.bs)
+            or (sep_id is not None and sep_id in cls.bs)
+            or (cls_id is not None and cls_id in cls.es)
+            or (sep_id is not None and sep_id in cls.es)
+        )
+
         for i in input_ids:
             ss = i.shape[0]
             ii = i[i != cls.pad_token_id]
 
-            ni = [ii[:1], bs]
+            ni = [bs]
             if ii.shape[0] > 2:
                 ni += [ii[1:-1]]
             
-            ni += [es, ii[-1:]]
+            ni += [es]
+            if not has_template_special_tokens:
+                ni = [ii[:1]] + ni + [ii[-1:]]
             if ii.shape[0] < i.shape[0]:
                 ni += [i[i == cls.pad_token_id]]
             
             ni = torch.cat(ni)
             
             try:
-                assert ss + bs.shape[0] + es.shape[0] == ni.shape[0]
+                expected_len = ss + bs.shape[0] + es.shape[0]
+                if has_template_special_tokens:
+                    expected_len -= 2
+                assert expected_len == ni.shape[0]
             except:
                 print(ss + bs.shape[0] + es.shape[0])
                 print(ni.shape[0])

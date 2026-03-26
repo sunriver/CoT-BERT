@@ -6,6 +6,7 @@ sys.path.append('..')
 import os
 import torch
 import logging
+import re
 import transformers
 from dataclasses import dataclass, field, asdict
 from datasets import load_dataset, Dataset
@@ -65,6 +66,29 @@ def _to_json_serializable(obj: Any) -> Any:
         return _to_json_serializable(asdict(obj))
     # Enum、Path 等转为字符串
     return str(obj)
+
+
+def _split_template_bs_es(template: str, tokenizer):
+    parsed = template.replace("*mask*", tokenizer.mask_token).replace("*sent_0*", " ")
+    parts = parsed.split(" ")
+    if len(parts) != 2:
+        raise ValueError(f"Invalid template format, expected exactly one *sent_0*: {template}")
+    return parts[0].replace("_", " "), parts[1].replace("_", " ")
+
+
+def _encode_template_segment_with_specials(tokenizer, text: str):
+    parts = re.split(r"(\*cls\*|\*sep\+\*)", text)
+    ids = []
+    for part in parts:
+        if not part:
+            continue
+        if part == "*cls*":
+            ids.append(tokenizer.cls_token_id)
+        elif part == "*sep+*":
+            ids.append(tokenizer.sep_token_id)
+        else:
+            ids.extend(tokenizer.encode(part, add_special_tokens=False))
+    return ids
 
 @dataclass
 class ModelArguments:
@@ -737,48 +761,34 @@ def main():
             template = model_args.mask_embedding_sentence_template
             assert ' ' not in template
 
-            template = template.replace('*mask*', tokenizer.mask_token)\
-                               .replace('*sep+*', '').replace('*cls*', '').replace('*sent_0*', ' ')
-           
-            template = template.split(' ')
-            
-            model_args.mask_embedding_sentence_bs = template[0].replace('_', ' ')
-            
+            model_args.mask_embedding_sentence_bs, model_args.mask_embedding_sentence_es = _split_template_bs_es(
+                template, tokenizer
+            )
             if 'roberta' in model_args.model_name_or_path:
                 model_args.mask_embedding_sentence_bs = model_args.mask_embedding_sentence_bs.strip()
-            
-            model_args.mask_embedding_sentence_es = template[1].replace('_', ' ')
 
         if model_args.mask_embedding_sentence_different_template != '':
             template = model_args.mask_embedding_sentence_different_template
             assert ' ' not in template
 
-            template = template.replace('*mask*', tokenizer.mask_token)\
-                               .replace('*sep+*', '').replace('*cls*', '').replace('*sent_0*', ' ')
-            
-            template = template.split(' ')
-            model_args.mask_embedding_sentence_bs2 = template[0].replace('_', ' ')
+            model_args.mask_embedding_sentence_bs2, model_args.mask_embedding_sentence_es2 = _split_template_bs_es(
+                template, tokenizer
+            )
 
             if 'roberta' in model_args.model_name_or_path:
                 model_args.mask_embedding_sentence_bs2 = model_args.mask_embedding_sentence_bs2.strip()
-                
-            model_args.mask_embedding_sentence_es2 = template[1].replace('_', ' ')
         
         # CoT-BERT Authors: add hard negative instance for unsupervised learning
         if model_args.mask_embedding_sentence_negative_template != '':
             template = model_args.mask_embedding_sentence_negative_template
             assert ' ' not in template
 
-            template = template.replace('*mask*', tokenizer.mask_token)\
-                               .replace('*sep+*', '').replace('*cls*', '').replace('*sent_0*', ' ')
-            
-            template = template.split(' ')
-            model_args.mask_embedding_sentence_bs3 = template[0].replace('_', ' ')
+            model_args.mask_embedding_sentence_bs3, model_args.mask_embedding_sentence_es3 = _split_template_bs_es(
+                template, tokenizer
+            )
 
             if 'roberta' in model_args.model_name_or_path:
                 model_args.mask_embedding_sentence_bs3 = model_args.mask_embedding_sentence_bs3.strip()
-                
-            model_args.mask_embedding_sentence_es3 = template[1].replace('_', ' ')
         
         # CoT-BERT Authors: add hard negative instance2 for unsupervised learning
         #                   Our paper did not use this option
@@ -786,16 +796,12 @@ def main():
             template = model_args.mask_embedding_sentence_different_negative_template
             assert ' ' not in template
 
-            template = template.replace('*mask*', tokenizer.mask_token)\
-                               .replace('*sep+*', '').replace('*cls*', '').replace('*sent_0*', ' ')
-            
-            template = template.split(' ')
-            model_args.mask_embedding_sentence_bs4 = template[0].replace('_', ' ')
+            model_args.mask_embedding_sentence_bs4, model_args.mask_embedding_sentence_es4 = _split_template_bs_es(
+                template, tokenizer
+            )
 
             if 'roberta' in model_args.model_name_or_path:
                 model_args.mask_embedding_sentence_bs4 = model_args.mask_embedding_sentence_bs4.strip()
-            
-            model_args.mask_embedding_sentence_es4 = template[1].replace('_', ' ')
 
     def prepare_features(examples):
         # padding = longest (default)
@@ -831,24 +837,24 @@ def main():
             sentences += examples[sent0_cname]
 
         if model_args.mask_embedding_sentence:
-            bs = tokenizer.encode(model_args.mask_embedding_sentence_bs)[:-1]
-            es = tokenizer.encode(model_args.mask_embedding_sentence_es)[1:]
+            bs = _encode_template_segment_with_specials(tokenizer, model_args.mask_embedding_sentence_bs)
+            es = _encode_template_segment_with_specials(tokenizer, model_args.mask_embedding_sentence_es)
 
             if len(model_args.mask_embedding_sentence_different_template) > 0:
-                bs2 = tokenizer.encode(model_args.mask_embedding_sentence_bs2)[:-1]
-                es2 = tokenizer.encode(model_args.mask_embedding_sentence_es2)[1:]
+                bs2 = _encode_template_segment_with_specials(tokenizer, model_args.mask_embedding_sentence_bs2)
+                es2 = _encode_template_segment_with_specials(tokenizer, model_args.mask_embedding_sentence_es2)
             else:
                 bs2, es2 = bs, es
             
             if len(model_args.mask_embedding_sentence_negative_template) > 0:
-                bs3 = tokenizer.encode(model_args.mask_embedding_sentence_bs3)[:-1]
-                es3 = tokenizer.encode(model_args.mask_embedding_sentence_es3)[1:]
+                bs3 = _encode_template_segment_with_specials(tokenizer, model_args.mask_embedding_sentence_bs3)
+                es3 = _encode_template_segment_with_specials(tokenizer, model_args.mask_embedding_sentence_es3)
             else:
                 bs3, es3 = bs, es
             
             if len(model_args.mask_embedding_sentence_different_negative_template) > 0:
-                bs4 = tokenizer.encode(model_args.mask_embedding_sentence_bs4)[:-1]
-                es4 = tokenizer.encode(model_args.mask_embedding_sentence_es4)[:-1]
+                bs4 = _encode_template_segment_with_specials(tokenizer, model_args.mask_embedding_sentence_bs4)
+                es4 = _encode_template_segment_with_specials(tokenizer, model_args.mask_embedding_sentence_es4)
             else:
                 bs4, es4 = bs, es
 
@@ -1018,31 +1024,30 @@ def main():
     if model_args.mask_embedding_sentence:
         model.pad_token_id = tokenizer.pad_token_id
         model.mask_token_id = tokenizer.mask_token_id
+        model.cls_token_id = tokenizer.cls_token_id
+        model.sep_token_id = tokenizer.sep_token_id
 
         model.bos = tokenizer.encode('')[0]
         model.eos = tokenizer.encode('')[1]
 
-        model.bs = tokenizer.encode(model_args.mask_embedding_sentence_bs, add_special_tokens=False)
-        model.es = tokenizer.encode(model_args.mask_embedding_sentence_es, add_special_tokens=False)
-        model.mask_embedding_template = tokenizer.encode(model_args.mask_embedding_sentence_bs + model_args.mask_embedding_sentence_es)
-
-        assert len(model.mask_embedding_template) == len(model.bs) + len(model.es) + 2
-        assert model.mask_embedding_template[1 : -1] == model.bs + model.es
+        model.bs = _encode_template_segment_with_specials(tokenizer, model_args.mask_embedding_sentence_bs)
+        model.es = _encode_template_segment_with_specials(tokenizer, model_args.mask_embedding_sentence_es)
+        model.mask_embedding_template = tokenizer.build_inputs_with_special_tokens(model.bs + model.es)
 
         if len(model_args.mask_embedding_sentence_different_template) > 0:
-            model.bs2 = tokenizer.encode(model_args.mask_embedding_sentence_bs2, add_special_tokens=False)
-            model.es2 = tokenizer.encode(model_args.mask_embedding_sentence_es2, add_special_tokens=False)
-            model.mask_embedding_template2 = tokenizer.encode(model_args.mask_embedding_sentence_bs2 + model_args.mask_embedding_sentence_es2)
+            model.bs2 = _encode_template_segment_with_specials(tokenizer, model_args.mask_embedding_sentence_bs2)
+            model.es2 = _encode_template_segment_with_specials(tokenizer, model_args.mask_embedding_sentence_es2)
+            model.mask_embedding_template2 = tokenizer.build_inputs_with_special_tokens(model.bs2 + model.es2)
         
         if len(model_args.mask_embedding_sentence_negative_template) > 0:
-            model.bs3 = tokenizer.encode(model_args.mask_embedding_sentence_bs3, add_special_tokens=False)
-            model.es3 = tokenizer.encode(model_args.mask_embedding_sentence_es3, add_special_tokens=False)
-            model.mask_embedding_template3 = tokenizer.encode(model_args.mask_embedding_sentence_bs3 + model_args.mask_embedding_sentence_es3)
+            model.bs3 = _encode_template_segment_with_specials(tokenizer, model_args.mask_embedding_sentence_bs3)
+            model.es3 = _encode_template_segment_with_specials(tokenizer, model_args.mask_embedding_sentence_es3)
+            model.mask_embedding_template3 = tokenizer.build_inputs_with_special_tokens(model.bs3 + model.es3)
         
         if len(model_args.mask_embedding_sentence_different_negative_template) > 0:
-            model.bs4 = tokenizer.encode(model_args.mask_embedding_sentence_bs4, add_special_tokens=False)
-            model.es4 = tokenizer.encode(model_args.mask_embedding_sentence_es4, add_special_tokens=False)
-            model.mask_embedding_template4 = tokenizer.encode(model_args.mask_embedding_sentence_bs4 + model_args.mask_embedding_sentence_es4)
+            model.bs4 = _encode_template_segment_with_specials(tokenizer, model_args.mask_embedding_sentence_bs4)
+            model.es4 = _encode_template_segment_with_specials(tokenizer, model_args.mask_embedding_sentence_es4)
+            model.mask_embedding_template4 = tokenizer.build_inputs_with_special_tokens(model.bs4 + model.es4)
 
         # CoT-BERT Authors: Since we haven't made any modifications related to the auto-prompt, 
         #                   there's a high probability that the following code may not function correctly.

@@ -185,6 +185,29 @@ def get_platform_eval_config_file():
     else:
         return "configs/evaluation_default.yaml"
 
+
+def _split_template_bs_es(template: str, tokenizer):
+    parsed = template.replace("*mask*", tokenizer.mask_token).replace("*sent_0*", " ")
+    parts = parsed.split(" ")
+    if len(parts) != 2:
+        raise ValueError(f"Invalid template format, expected exactly one *sent_0*: {template}")
+    return parts[0].replace("_", " "), parts[1].replace("_", " ")
+
+
+def _encode_template_segment_with_specials(tokenizer, text: str):
+    parts = re.split(r"(\*cls\*|\*sep\+\*)", text)
+    ids = []
+    for part in parts:
+        if not part:
+            continue
+        if part == "*cls*":
+            ids.append(tokenizer.cls_token_id)
+        elif part == "*sep+*":
+            ids.append(tokenizer.sep_token_id)
+        else:
+            ids.extend(tokenizer.encode(part, add_special_tokens=False))
+    return ids
+
 def main():
     # 获取平台特定的配置文件
     config_file = get_platform_eval_config_file()
@@ -251,11 +274,9 @@ def main():
     
     if model_args.mask_embedding_sentence and model_args.mask_embedding_sentence_template:
         template = model_args.mask_embedding_sentence_template
-        template = template.replace('*mask*', tokenizer.mask_token)\
-                           .replace('*sep+*', '').replace('*cls*', '').replace('*sent_0*', ' ')
-        template = template.split(' ')
-        model_args.mask_embedding_sentence_bs = template[0].replace('_', ' ')
-        model_args.mask_embedding_sentence_es = template[1].replace('_', ' ')
+        model_args.mask_embedding_sentence_bs, model_args.mask_embedding_sentence_es = _split_template_bs_es(
+            template, tokenizer
+        )
         if 'roberta' in args.model_name_or_path:
             model_args.mask_embedding_sentence_bs = model_args.mask_embedding_sentence_bs.strip()
 
@@ -282,10 +303,12 @@ def main():
     if model_args.mask_embedding_sentence:
         model.pad_token_id = tokenizer.pad_token_id
         model.mask_token_id = tokenizer.mask_token_id
+        model.cls_token_id = tokenizer.cls_token_id
+        model.sep_token_id = tokenizer.sep_token_id
         model.mask_num = model_args.mask_num
-        model.bs = tokenizer.encode(model_args.mask_embedding_sentence_bs, add_special_tokens=False)
-        model.es = tokenizer.encode(model_args.mask_embedding_sentence_es, add_special_tokens=False)
-        model.mask_embedding_template = tokenizer.encode(model_args.mask_embedding_sentence_bs + model_args.mask_embedding_sentence_es)
+        model.bs = _encode_template_segment_with_specials(tokenizer, model_args.mask_embedding_sentence_bs)
+        model.es = _encode_template_segment_with_specials(tokenizer, model_args.mask_embedding_sentence_es)
+        model.mask_embedding_template = tokenizer.build_inputs_with_special_tokens(model.bs + model.es)
 
         # 默认设置 bs2/es2 等，防止 denoising 报错 (评估时通常与 bs/es 一致)
         model.bs2 = model.bs

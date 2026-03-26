@@ -2,6 +2,7 @@ import sys
 import os
 import json
 import inspect
+import re
 from datetime import datetime
 
 #全局层面把旧 API 重定向到新 API，SentEval 调用时自然就用了兼容版本
@@ -144,7 +145,7 @@ PROBING_TASKS = [
 ]
 
 
-def _inject_template(input_ids, pad_token_id, bs_ids, es_ids):
+def _inject_template(input_ids, pad_token_id, bs_ids, es_ids, cls_token_id, sep_token_id):
     """
     复制 cot_bert_model.sentemb_forward 中的 template 注入逻辑：
     [CLS] + bs + sentence_tokens + es + [SEP] (+ padding)
@@ -153,14 +154,28 @@ def _inject_template(input_ids, pad_token_id, bs_ids, es_ids):
     bs = torch.LongTensor(bs_ids).to(input_ids.device)
     es = torch.LongTensor(es_ids).to(input_ids.device)
 
+    has_template_special_tokens = False
+    if bs_ids is not None and es_ids is not None:
+        has_template_special_tokens = (
+            cls_token_id in bs_ids
+            or sep_token_id in bs_ids
+            or cls_token_id in es_ids
+            or sep_token_id in es_ids
+        )
+
     for row in input_ids:
         ss = row.shape[0]
         ii = row[row != pad_token_id]
-
-        parts = [ii[:1], bs]
-        if ii.shape[0] > 2:
-            parts += [ii[1:-1]]
-        parts += [es, ii[-1:]]
+        if has_template_special_tokens:
+            parts = [bs]
+            if ii.shape[0] > 2:
+                parts += [ii[1:-1]]
+            parts += [es]
+        else:
+            parts = [ii[:1], bs]
+            if ii.shape[0] > 2:
+                parts += [ii[1:-1]]
+            parts += [es, ii[-1:]]
 
         if ii.shape[0] < row.shape[0]:
             parts += [row[row == pad_token_id]]
@@ -168,7 +183,10 @@ def _inject_template(input_ids, pad_token_id, bs_ids, es_ids):
         ni = torch.cat(parts)
 
         # 与原逻辑一致的形状检查
-        if ss + bs.shape[0] + es.shape[0] != ni.shape[0]:
+        expected_len = ss + bs.shape[0] + es.shape[0]
+        if has_template_special_tokens:
+            expected_len -= 2
+        if expected_len != ni.shape[0]:
             raise RuntimeError("Template injection length mismatch.")
 
         new_input_ids.append(ni)
@@ -176,6 +194,29 @@ def _inject_template(input_ids, pad_token_id, bs_ids, es_ids):
     injected = torch.stack(new_input_ids, dim=0)
     attn_mask = (injected != pad_token_id).long()
     return injected, attn_mask
+
+
+def _split_template_bs_es(template: str, tokenizer):
+    parsed = template.replace("*mask*", tokenizer.mask_token).replace("*sent_0*", " ")
+    parts = parsed.split(" ")
+    if len(parts) != 2:
+        raise ValueError(f"Invalid template format, expected exactly one *sent_0*: {template}")
+    return parts[0].replace("_", " "), parts[1].replace("_", " ")
+
+
+def _encode_template_segment_with_specials(tokenizer, text: str):
+    parts = re.split(r"(\*cls\*|\*sep\+\*)", text)
+    ids = []
+    for part in parts:
+        if not part:
+            continue
+        if part == "*cls*":
+            ids.append(tokenizer.cls_token_id)
+        elif part == "*sep+*":
+            ids.append(tokenizer.sep_token_id)
+        else:
+            ids.extend(tokenizer.encode(part, add_special_tokens=False))
+    return ids
 
 
 def main():
@@ -271,15 +312,9 @@ def main():
     # 解析模板得到 bs/es（与 sentemb 脚本一致）
     if model_args.mask_embedding_sentence and model_args.mask_embedding_sentence_template:
         template = model_args.mask_embedding_sentence_template
-        template = (
-            template.replace("*mask*", tokenizer.mask_token)
-            .replace("*sep+*", "")
-            .replace("*cls*", "")
-            .replace("*sent_0*", " ")
+        model_args.mask_embedding_sentence_bs, model_args.mask_embedding_sentence_es = _split_template_bs_es(
+            template, tokenizer
         )
-        template = template.split(" ")
-        model_args.mask_embedding_sentence_bs = template[0].replace("_", " ")
-        model_args.mask_embedding_sentence_es = template[1].replace("_", " ")
         if "roberta" in args.model_name_or_path:
             model_args.mask_embedding_sentence_bs = model_args.mask_embedding_sentence_bs.strip()
 
@@ -311,8 +346,8 @@ def main():
             raise ValueError(
                 "repr_type 含 mask1/mask2 时需要 mask_embedding_sentence 与 mask_embedding_sentence_template。"
             )
-        bs_ids = tokenizer.encode(model_args.mask_embedding_sentence_bs, add_special_tokens=False)
-        es_ids = tokenizer.encode(model_args.mask_embedding_sentence_es, add_special_tokens=False)
+        bs_ids = _encode_template_segment_with_specials(tokenizer, model_args.mask_embedding_sentence_bs)
+        es_ids = _encode_template_segment_with_specials(tokenizer, model_args.mask_embedding_sentence_es)
 
     def prepare(params, samples):
         return
@@ -347,6 +382,8 @@ def main():
                     pad_token_id=tokenizer.pad_token_id,
                     bs_ids=bs_ids,
                     es_ids=es_ids,
+                    cls_token_id=tokenizer.cls_token_id,
+                    sep_token_id=tokenizer.sep_token_id,
                 )
                 out = model.bert(
                     input_ids=injected_ids,
