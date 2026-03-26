@@ -1,7 +1,7 @@
 model_name_or_path: "../result/CoT-Bert"
 
-# Use one of: mask1 / mask2 / cls
-repr_type: "mask2"
+# Use one of: mask1 / mask2 / cls / all
+repr_type: "all"
 
 # CoT template settings (required for mask1/mask2)
 mask_embedding_sentence: true

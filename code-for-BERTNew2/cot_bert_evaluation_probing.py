@@ -16,6 +16,7 @@ from argparse import Namespace
 from transformers import AutoConfig, AutoTokenizer
 
 from cot_bert_model import BertForCL, RobertaForCL
+from git_repo_info import get_git_repo_info
 from parse_args_util import load_configs
 from platform_utils import (
     detect_platform,
@@ -31,6 +32,102 @@ PATH_TO_DATA = os.path.normpath(os.path.join(PATH_TO_SENTEVAL, "data"))
 
 sys.path.insert(0, PATH_TO_SENTEVAL)
 import senteval
+
+
+def _namespace_to_jsonable(ns):
+    """将 Namespace 转为可 JSON 序列化的 dict。"""
+    if ns is None:
+        return {}
+    out = {}
+    for k, v in vars(ns).items():
+        try:
+            json.dumps(v)
+            out[k] = v
+        except (TypeError, ValueError):
+            out[k] = str(v)
+    return out
+
+
+def _load_checkpoint_eval_metadata(model_dir: str, script_dir: str):
+    """
+    与 cot_bert_evaluation_sentemb.save_experiment_log 一致：从 checkpoint 目录读取
+    train_config_full.json、trainer_state.json 摘要，并附 Git 信息。
+    """
+    train_config_full_path = None
+    train_config_full = None
+    trainer_state_summary = None
+
+    if isinstance(model_dir, str) and model_dir:
+        train_config_full_path = os.path.join(model_dir, "train_config_full.json")
+        if os.path.isfile(train_config_full_path):
+            try:
+                with open(train_config_full_path, "r", encoding="utf-8") as f:
+                    train_config_full = json.load(f)
+            except Exception as e:
+                print(f"[ProbingLog] Failed to load train_config_full.json from '{train_config_full_path}': {e}")
+        else:
+            print(f"[ProbingLog] train_config_full.json not found in model dir: {train_config_full_path}")
+
+        trainer_state_path = os.path.join(model_dir, "trainer_state.json")
+        if os.path.isfile(trainer_state_path):
+            try:
+                with open(trainer_state_path, "r", encoding="utf-8") as f:
+                    trainer_state = json.load(f)
+
+                def _extract_step_from_ckpt(ckpt):
+                    if not isinstance(ckpt, str) or "checkpoint-" not in ckpt:
+                        return None
+                    try:
+                        step_str = ckpt.split("checkpoint-")[-1].split("/")[0]
+                        return int(step_str)
+                    except Exception:
+                        return None
+
+                best_ckpt = trainer_state.get("best_model_checkpoint", None)
+                best_step = _extract_step_from_ckpt(best_ckpt)
+                log_history = trainer_state.get("log_history", [])
+                if not isinstance(log_history, list):
+                    log_history = []
+                last_log_history = log_history[-5:] if len(log_history) >= 5 else log_history
+
+                best_eval_entry = None
+                if best_step is not None and log_history:
+                    for entry in reversed(log_history):
+                        if not isinstance(entry, dict):
+                            continue
+                        step_val = entry.get("step", entry.get("global_step", None))
+                        if step_val == best_step:
+                            eval_keys = {
+                                k: v
+                                for k, v in entry.items()
+                                if isinstance(k, str) and k.startswith("eval_")
+                            }
+                            if eval_keys:
+                                best_eval_entry = {"step": step_val, "eval_metrics": eval_keys}
+                            else:
+                                best_eval_entry = {"step": step_val}
+                            break
+
+                trainer_state_summary = {
+                    "global_step": trainer_state.get("global_step", None),
+                    "epoch": trainer_state.get("epoch", None),
+                    "best_model_checkpoint": best_ckpt,
+                    "best_model_checkpoint_step": best_step,
+                    "best_metric": trainer_state.get("best_metric", None),
+                    "last_log_history": last_log_history,
+                    "best_eval_entry": best_eval_entry,
+                }
+            except Exception as e:
+                print(f"[ProbingLog] Failed to load trainer_state.json from '{trainer_state_path}': {e}")
+
+    git_repo_info = get_git_repo_info(script_dir)
+    return {
+        "model_dir": model_dir,
+        "train_config_full_path": train_config_full_path,
+        "train_config_full": train_config_full,
+        "trainer_state_summary": trainer_state_summary,
+        "git": git_repo_info,
+    }
 
 
 PROBING_TASKS = [
@@ -122,7 +219,13 @@ def main():
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_name_or_path", type=str, required=True)
-    parser.add_argument("--repr_type", type=str, choices=["mask1", "mask2", "cls"], default="mask2")
+    parser.add_argument(
+        "--repr_type",
+        type=str,
+        choices=["mask1", "mask2", "cls", "all"],
+        default="all",
+        help="all: 依次探测 mask1、mask2、cls 并输出对比表与合并 JSON",
+    )
     parser.add_argument("--mode", type=str, choices=["dev", "test", "fasttest"], default="test")
 
     # CoT 模板相关（与 sentemb 脚本保持一致）
@@ -199,82 +302,67 @@ def main():
     model = model.to(device)
     model.eval()
 
-    # mask 表示需要 bs/es token ids
+    repr_types = ["mask1", "mask2", "cls"] if args.repr_type == "all" else [args.repr_type]
+    needs_mask_template = any(r in ("mask1", "mask2") for r in repr_types)
+
     bs_ids, es_ids = None, None
-    if args.repr_type in ("mask1", "mask2"):
+    if needs_mask_template:
         if not (model_args.mask_embedding_sentence and hasattr(model_args, "mask_embedding_sentence_bs")):
-            raise ValueError("repr_type=mask1/mask2 需要 mask_embedding_sentence 与 mask_embedding_sentence_template。")
+            raise ValueError(
+                "repr_type 含 mask1/mask2 时需要 mask_embedding_sentence 与 mask_embedding_sentence_template。"
+            )
         bs_ids = tokenizer.encode(model_args.mask_embedding_sentence_bs, add_special_tokens=False)
         es_ids = tokenizer.encode(model_args.mask_embedding_sentence_es, add_special_tokens=False)
 
     def prepare(params, samples):
         return
 
-    def batcher(params, batch):
-        sentences = [" ".join(s) for s in batch]
-        # probing 数据已是 token list；保持与 sentemb 一致的句号补全会改变 probing 分布，这里不做。
+    def make_batcher(current_repr: str):
+        """按当前表示类型返回 SentEval batcher（闭包）。"""
 
-        tok = tokenizer.batch_encode_plus(
-            sentences,
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-            max_length=256,
-        )
-        for k in tok:
-            tok[k] = tok[k].to(device)
+        def batcher(params, batch):
+            sentences = [" ".join(s) for s in batch]
+            tok = tokenizer.batch_encode_plus(
+                sentences,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=256,
+            )
+            for k in tok:
+                tok[k] = tok[k].to(device)
 
-        with torch.no_grad():
-            if args.repr_type == "mask2":
-                # probing 中不走 sent_emb 分支（需要 model.bs 等训练期属性）
+            with torch.no_grad():
+                if current_repr == "cls":
+                    out = model.bert(
+                        input_ids=tok["input_ids"],
+                        attention_mask=tok["attention_mask"],
+                        token_type_ids=tok.get("token_type_ids", None),
+                        return_dict=True,
+                    )
+                    return out.last_hidden_state[:, 0, :].detach().cpu()
+
                 injected_ids, injected_attn = _inject_template(
                     tok["input_ids"],
                     pad_token_id=tokenizer.pad_token_id,
                     bs_ids=bs_ids,
                     es_ids=es_ids,
                 )
-
                 out = model.bert(
                     input_ids=injected_ids,
                     attention_mask=injected_attn,
                     token_type_ids=None,
                     return_dict=True,
                 )
-
-                last_hidden = out.last_hidden_state  # [B, L, H]
+                last_hidden = out.last_hidden_state
                 mask_positions = injected_ids == tokenizer.mask_token_id
                 reps = last_hidden[mask_positions].view(injected_ids.size(0), args.mask_num, -1)
+                if current_repr == "mask1":
+                    return reps[:, 0, :].detach().cpu()
+                # mask2
                 return reps[:, args.mask_num - 1, :].detach().cpu()
 
-            if args.repr_type == "cls":
-                out = model.bert(
-                    input_ids=tok["input_ids"],
-                    attention_mask=tok["attention_mask"],
-                    token_type_ids=tok.get("token_type_ids", None),
-                    return_dict=True,
-                )
-                return out.last_hidden_state[:, 0, :].detach().cpu()
-
-            # mask1：模板注入后取第一个 MASK 的隐藏状态
-            injected_ids, injected_attn = _inject_template(
-                tok["input_ids"],
-                pad_token_id=tokenizer.pad_token_id,
-                bs_ids=bs_ids,
-                es_ids=es_ids,
-            )
-
-            out = model.bert(
-                input_ids=injected_ids,
-                attention_mask=injected_attn,
-                token_type_ids=None,
-                return_dict=True,
-            )
-
-            last_hidden = out.last_hidden_state  # [B, L, H]
-            mask_positions = injected_ids == tokenizer.mask_token_id
-            # 每个样本应有 mask_num 个 mask token
-            reps = last_hidden[mask_positions].view(injected_ids.size(0), args.mask_num, -1)
-            return reps[:, 0, :].detach().cpu()
+        return batcher
 
     # SentEval 参数（探针任务是分类）
     params = {
@@ -285,31 +373,99 @@ def main():
         "classifier": {"nhid": 0, "optim": "adam", "batch_size": 128, "tenacity": 5, "epoch_size": 4},
     }
 
-    results = {}
-    for task in PROBING_TASKS:
-        se = senteval.engine.SE(params, batcher, prepare)
-        results[task] = se.eval(task)
+    results_by_repr = {}
+    summary_by_repr = {}
+    for rtype in repr_types:
+        batcher = make_batcher(rtype)
+        results = {}
+        for task in PROBING_TASKS:
+            se = senteval.engine.SE(params, batcher, prepare)
+            results[task] = se.eval(task)
+        results_by_repr[rtype] = results
+        summary_by_repr[rtype] = {
+            task: float(results[task].get("acc", 0.0)) for task in PROBING_TASKS if task in results
+        }
 
-    summary = {task: float(results[task].get("acc", 0.0)) for task in PROBING_TASKS if task in results}
+    time_str = datetime.now().isoformat()
+    comparison = {}
+    for task in PROBING_TASKS:
+        row = {r: summary_by_repr[r].get(task, 0.0) for r in repr_types}
+        best_r = max(repr_types, key=lambda r: row[r])
+        row["best"] = best_r
+        row["best_acc"] = row[best_r]
+        # 相对 mask2 的差值（便于与主评测句向量对齐分析）
+        if "mask2" in repr_types:
+            row["diff_vs_mask2"] = {r: round(row[r] - row["mask2"], 2) for r in repr_types}
+        comparison[task] = row
+
+    checkpoint_meta = _load_checkpoint_eval_metadata(args.model_name_or_path, _SCRIPT_DIR)
 
     record = {
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": time_str,
         "script": os.path.basename(__file__),
         "repr_type": args.repr_type,
+        "repr_types_run": repr_types,
         "model_name_or_path": args.model_name_or_path,
-        "results": results,
-        "summary": summary,
+        "results_by_repr": results_by_repr,
+        "summary_by_repr": summary_by_repr,
+        "comparison": comparison,
+        # 与 sentemb 评估日志对齐，便于与 STS 等结果对照复现
+        **checkpoint_meta,
+        "eval_args": _namespace_to_jsonable(args),
+        "model_args": _namespace_to_jsonable(model_args),
+        "model_config": config.to_dict(),
+        "platform_type": platform_type,
+        "eval_config_default": default_cfg,
+        "eval_config_custom": custom_cfg if custom_cfg else None,
+        "device": str(device),
+        "path_to_senteval_data": PATH_TO_DATA,
+        "probing_senteval_params": params,
+        "probing_tasks": list(PROBING_TASKS),
     }
 
+    # 单种表示时保留与旧版兼容的顶层字段
+    if len(repr_types) == 1:
+        only = repr_types[0]
+        record["results"] = results_by_repr[only]
+        record["summary"] = summary_by_repr[only]
+
     os.makedirs("eval_results", exist_ok=True)
-    time_str = datetime.now().strftime("%Y%m%d-%H%M%S")
-    out_path = os.path.join("eval_results", f"probing_{args.repr_type}_{time_str}.json")
+    file_ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    suffix = "all" if args.repr_type == "all" else args.repr_type
+    out_path = os.path.join("eval_results", f"probing_{suffix}_{file_ts}.json")
+    def _json_default(o):
+        return str(o)
+
     with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(record, f, ensure_ascii=False, indent=2)
+        json.dump(record, f, ensure_ascii=False, indent=2, default=_json_default)
 
     print(f"[Probing] Saved results to: {out_path}")
-    for k, v in summary.items():
-        print(f"{k}\t{v:.2f}")
+    print(f"[ProbingLog] Metadata (train_config / trainer_state / git) merged into JSON for comparison with sentemb logs.")
+
+    if len(repr_types) > 1:
+        col_w = max(len(t) for t in PROBING_TASKS)
+        header = f"{'Task':<{col_w}}  {'MASK1':>8}  {'MASK2':>8}  {'CLS':>8}  {'Best':>8}"
+        sep = "-" * len(header)
+        print(sep)
+        print(header)
+        print(sep)
+        for task in PROBING_TASKS:
+            m1 = summary_by_repr["mask1"].get(task, 0.0)
+            m2 = summary_by_repr["mask2"].get(task, 0.0)
+            cl = summary_by_repr["cls"].get(task, 0.0)
+            b = comparison[task]["best"]
+            print(f"{task:<{col_w}}  {m1:8.2f}  {m2:8.2f}  {cl:8.2f}  {b:>8}")
+        print(sep)
+        print("diff_vs_mask2 (MASK1, CLS):")
+        for task in PROBING_TASKS:
+            d = comparison[task].get("diff_vs_mask2", {})
+            print(
+                f"  {task}: mask1 {d.get('mask1', 0):+.2f}, cls {d.get('cls', 0):+.2f}"
+            )
+    else:
+        only = repr_types[0]
+        for k, v in summary_by_repr[only].items():
+            print(f"{k}\t{v:.2f}")
 
 
 if __name__ == "__main__":
