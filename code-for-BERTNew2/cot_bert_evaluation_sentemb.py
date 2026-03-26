@@ -308,7 +308,10 @@ def main():
         model.mask_num = model_args.mask_num
         model.bs = _encode_template_segment_with_specials(tokenizer, model_args.mask_embedding_sentence_bs)
         model.es = _encode_template_segment_with_specials(tokenizer, model_args.mask_embedding_sentence_es)
-        model.mask_embedding_template = tokenizer.build_inputs_with_special_tokens(model.bs + model.es)
+        if model.cls_token_id in model.bs or model.sep_token_id in model.bs or model.cls_token_id in model.es or model.sep_token_id in model.es:
+            model.mask_embedding_template = model.bs + model.es
+        else:
+            model.mask_embedding_template = tokenizer.build_inputs_with_special_tokens(model.bs + model.es)
 
         # 默认设置 bs2/es2 等，防止 denoising 报错 (评估时通常与 bs/es 一致)
         model.bs2 = model.bs

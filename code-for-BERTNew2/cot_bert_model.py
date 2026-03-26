@@ -127,6 +127,18 @@ def denoising(cls, encoder, template, type='pos-1', device='cuda', evaluation=Fa
 
         input_ids = torch.Tensor(input_ids).to(device).long()
         attention_mask = torch.Tensor(attention_mask).to(device).long()
+        
+        orig_size = input_ids.size(0)
+
+        # Pad batch size to be a multiple of num_columns if custom dropout is enabled
+        num_columns = getattr(encoder.config, "num_columns", 1)
+        if getattr(encoder.config, "enable_custom_dropout_for_last_column", False) and num_columns > 1:
+            rem = input_ids.size(0) % num_columns
+            if rem != 0:
+                pad_rows = num_columns - rem
+                # Duplicate the last row pad_rows times
+                input_ids = torch.cat([input_ids, input_ids[-1:].expand(pad_rows, -1)], dim=0)
+                attention_mask = torch.cat([attention_mask, attention_mask[-1:].expand(pad_rows, -1)], dim=0)
 
         # CoT-BERT Authors: Since we haven't made any modifications related to the auto-prompt, 
         #                   there's a high probability that the following code may not function correctly.        
@@ -166,6 +178,7 @@ def denoising(cls, encoder, template, type='pos-1', device='cuda', evaluation=Fa
             noise = last_hidden[mask]
 
         noise = noise.view(-1, cls.mask_num, noise.shape[-1])
+        noise = noise[:orig_size]
         # 返回所有MASK位置的噪声，形状为 [max_pad_length, mask_num, hidden_size]
         # 不再切片，以支持双MASK损失计算
 

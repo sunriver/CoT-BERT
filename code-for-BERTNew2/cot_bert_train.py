@@ -1032,22 +1032,34 @@ def main():
 
         model.bs = _encode_template_segment_with_specials(tokenizer, model_args.mask_embedding_sentence_bs)
         model.es = _encode_template_segment_with_specials(tokenizer, model_args.mask_embedding_sentence_es)
-        model.mask_embedding_template = tokenizer.build_inputs_with_special_tokens(model.bs + model.es)
+        if model.cls_token_id in model.bs or model.sep_token_id in model.bs or model.cls_token_id in model.es or model.sep_token_id in model.es:
+            model.mask_embedding_template = model.bs + model.es
+        else:
+            model.mask_embedding_template = tokenizer.build_inputs_with_special_tokens(model.bs + model.es)
 
         if len(model_args.mask_embedding_sentence_different_template) > 0:
             model.bs2 = _encode_template_segment_with_specials(tokenizer, model_args.mask_embedding_sentence_bs2)
             model.es2 = _encode_template_segment_with_specials(tokenizer, model_args.mask_embedding_sentence_es2)
-            model.mask_embedding_template2 = tokenizer.build_inputs_with_special_tokens(model.bs2 + model.es2)
+            if model.cls_token_id in model.bs2 or model.sep_token_id in model.bs2 or model.cls_token_id in model.es2 or model.sep_token_id in model.es2:
+                model.mask_embedding_template2 = model.bs2 + model.es2
+            else:
+                model.mask_embedding_template2 = tokenizer.build_inputs_with_special_tokens(model.bs2 + model.es2)
         
         if len(model_args.mask_embedding_sentence_negative_template) > 0:
             model.bs3 = _encode_template_segment_with_specials(tokenizer, model_args.mask_embedding_sentence_bs3)
             model.es3 = _encode_template_segment_with_specials(tokenizer, model_args.mask_embedding_sentence_es3)
-            model.mask_embedding_template3 = tokenizer.build_inputs_with_special_tokens(model.bs3 + model.es3)
+            if model.cls_token_id in model.bs3 or model.sep_token_id in model.bs3 or model.cls_token_id in model.es3 or model.sep_token_id in model.es3:
+                model.mask_embedding_template3 = model.bs3 + model.es3
+            else:
+                model.mask_embedding_template3 = tokenizer.build_inputs_with_special_tokens(model.bs3 + model.es3)
         
         if len(model_args.mask_embedding_sentence_different_negative_template) > 0:
             model.bs4 = _encode_template_segment_with_specials(tokenizer, model_args.mask_embedding_sentence_bs4)
             model.es4 = _encode_template_segment_with_specials(tokenizer, model_args.mask_embedding_sentence_es4)
-            model.mask_embedding_template4 = tokenizer.build_inputs_with_special_tokens(model.bs4 + model.es4)
+            if model.cls_token_id in model.bs4 or model.sep_token_id in model.bs4 or model.cls_token_id in model.es4 or model.sep_token_id in model.es4:
+                model.mask_embedding_template4 = model.bs4 + model.es4
+            else:
+                model.mask_embedding_template4 = tokenizer.build_inputs_with_special_tokens(model.bs4 + model.es4)
 
         # CoT-BERT Authors: Since we haven't made any modifications related to the auto-prompt, 
         #                   there's a high probability that the following code may not function correctly.
