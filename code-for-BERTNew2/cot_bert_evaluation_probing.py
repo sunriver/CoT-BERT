@@ -1,7 +1,11 @@
 import sys
 import os
 import json
+import inspect
 from datetime import datetime
+
+#全局层面把旧 API 重定向到新 API，SentEval 调用时自然就用了兼容版本
+inspect.getargspec = inspect.getfullargspec
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.join(_SCRIPT_DIR, ".."))
