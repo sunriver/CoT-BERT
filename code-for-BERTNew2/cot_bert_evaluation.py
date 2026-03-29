@@ -572,6 +572,22 @@ def main():
                 scores.append("0.00")
         print_table(task_names, scores)
 
+        # 与 cot_bert_evaluation_sentemb 一致：将 dev 上 STSB+SICK 表格写入 results
+        try:
+            summary_scores = []
+            for s in scores:
+                try:
+                    summary_scores.append(float(s))
+                except (TypeError, ValueError):
+                    summary_scores.append(None)
+            results["summary_table"] = {
+                "mode": args.mode,
+                "tasks": task_names,
+                "scores": summary_scores,
+            }
+        except Exception as e:
+            print(f"[EvalLog] Failed to build summary_table for logging: {e}")
+
         scores = []
         task_names = []
         for task in ['MR', 'CR', 'SUBJ', 'MPQA', 'SST2', 'TREC', 'MRPC']:
@@ -602,6 +618,22 @@ def main():
         task_names.append("Avg.")
         scores.append("%.2f" % (sum([float(score) for score in scores]) / len(scores)))
         print_table(task_names, scores)
+
+        # 与 cot_bert_evaluation_sentemb 一致：STS 全表 + Avg. 写入 results
+        try:
+            summary_scores = []
+            for s in scores:
+                try:
+                    summary_scores.append(float(s))
+                except (TypeError, ValueError):
+                    summary_scores.append(None)
+            results["summary_table"] = {
+                "mode": args.mode,
+                "tasks": task_names,
+                "scores": summary_scores,
+            }
+        except Exception as e:
+            print(f"[EvalLog] Failed to build summary_table for logging: {e}")
 
         scores = []
         task_names = []
