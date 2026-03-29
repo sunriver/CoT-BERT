@@ -1,6 +1,10 @@
 import re
 import sys
-sys.path.append('..') 
+import json
+import os
+from datetime import datetime
+
+sys.path.append('..')
 
 import tqdm
 import torch
@@ -12,6 +16,7 @@ from transformers import AutoModel, AutoTokenizer
 
 from lmf_log_util import getMyLogger
 from parse_args_util import load_configs
+from git_repo_info import get_git_repo_info
 
 # 跨平台设备配置
 from platform_utils import (
@@ -65,6 +70,124 @@ def print_table(task_names, scores):
     tb.field_names = task_names
     tb.add_row(scores)
     print(tb)
+
+
+def save_experiment_log(args, model_args, config, results):
+    """
+    保存 train_config_full、trainer_state 摘要、Git 分支/commit、本次评估结果到 JSON，
+    方便后续回顾与复现。
+    """
+    args_dict = vars(args) if args is not None else {}
+    results_dict = results if isinstance(results, dict) else {}
+
+    # 1. 从当前模型目录读取训练时保存的 train_config_full.json
+    model_dir = args_dict.get("model_name_or_path")
+    train_config_full_path = None
+    train_config_full = None
+
+    if isinstance(model_dir, str) and model_dir:
+        train_config_full_path = os.path.join(model_dir, "train_config_full.json")
+        if os.path.isfile(train_config_full_path):
+            try:
+                with open(train_config_full_path, "r", encoding="utf-8") as f:
+                    train_config_full = json.load(f)
+            except Exception as e:
+                print(f"[EvalLog] Failed to load train_config_full.json from '{train_config_full_path}': {e}")
+        else:
+            print(f"[EvalLog] train_config_full.json not found in model dir: {train_config_full_path}")
+
+    # 1.5 从训练目录读取 trainer_state.json（记录训练关键点：best checkpoint、best metric 等）
+    trainer_state_summary = None
+    if isinstance(model_dir, str) and model_dir:
+        trainer_state_path = os.path.join(model_dir, "trainer_state.json")
+        if os.path.isfile(trainer_state_path):
+            try:
+                with open(trainer_state_path, "r", encoding="utf-8") as f:
+                    trainer_state = json.load(f)
+
+                def _extract_step_from_ckpt(ckpt: str):
+                    # ckpt 常见形如 ".../checkpoint-1234"
+                    if not isinstance(ckpt, str):
+                        return None
+                    if "checkpoint-" not in ckpt:
+                        return None
+                    try:
+                        step_str = ckpt.split("checkpoint-")[-1].split("/")[0]
+                        return int(step_str)
+                    except Exception:
+                        return None
+
+                best_ckpt = trainer_state.get("best_model_checkpoint", None)
+                best_step = _extract_step_from_ckpt(best_ckpt)
+
+                log_history = trainer_state.get("log_history", [])
+                if not isinstance(log_history, list):
+                    log_history = []
+
+                # 只保留最后若干条日志，避免日志过大
+                last_log_history = log_history[-5:] if len(log_history) >= 5 else log_history
+
+                # 尝试在 log_history 中定位 best checkpoint 对应的 eval_* 指标条目
+                best_eval_entry = None
+                if best_step is not None and log_history:
+                    for entry in reversed(log_history):
+                        if not isinstance(entry, dict):
+                            continue
+                        step_val = entry.get("step", entry.get("global_step", None))
+                        if step_val == best_step:
+                            eval_keys = {k: v for k, v in entry.items() if isinstance(k, str) and k.startswith("eval_")}
+                            if eval_keys:
+                                best_eval_entry = {"step": step_val, "eval_metrics": eval_keys}
+                            else:
+                                best_eval_entry = {"step": step_val}
+                            break
+
+                trainer_state_summary = {
+                    "global_step": trainer_state.get("global_step", None),
+                    "epoch": trainer_state.get("epoch", None),
+                    "best_model_checkpoint": best_ckpt,
+                    "best_model_checkpoint_step": best_step,
+                    "best_metric": trainer_state.get("best_metric", None),
+                    "last_log_history": last_log_history,
+                    "best_eval_entry": best_eval_entry,
+                }
+            except Exception as e:
+                print(f"[EvalLog] Failed to load trainer_state.json from '{trainer_state_path}': {e}")
+
+    # 1.6 评估时代码仓库 Git 信息（以本脚本所在目录为 cwd）
+    _script_dir = os.path.dirname(os.path.abspath(__file__))
+    git_repo_info = get_git_repo_info(_script_dir)
+
+    # 2. 只组织需要的信息：训练 full 配置 + 评估结果
+    record = {
+        "timestamp": datetime.now().isoformat(),
+        "script": os.path.basename(__file__),
+        "model_dir": model_dir,
+        "train_config_full_path": train_config_full_path,
+        "train_config_full": train_config_full,
+        "trainer_state_summary": trainer_state_summary,
+        "git": git_repo_info,
+        "results": results_dict,
+    }
+
+    # 3. 确定保存路径
+    save_dir = os.path.join("..", "result", "CoT-Bert", "eval_logs")
+    os.makedirs(save_dir, exist_ok=True)
+
+    # 文件名中加入模式信息，便于区分不同评估模式
+    mode = args_dict.get("mode", "unknown")
+    time_str = datetime.now().strftime("%Y%m%d-%H%M%S")
+
+    filename = f"eval_{mode}_{time_str}.json"
+    save_path = os.path.join(save_dir, filename)
+
+    # 3. 写入 JSON 文件
+    try:
+        with open(save_path, "w", encoding="utf-8") as f:
+            json.dump(record, f, ensure_ascii=False, indent=2)
+        print(f"[EvalLog] Saved experiment log to: {save_path}")
+    except Exception as e:
+        print(f"[EvalLog] Failed to save experiment log: {e}")
 
 
 def denoising(model, template, tokenizer, device, mask_num):
@@ -492,6 +615,9 @@ def main():
         task_names.append("Avg.")
         scores.append("%.2f" % (sum([float(score) for score in scores]) / len(scores)))
         print_table(task_names, scores)
+
+    save_experiment_log(args, None, None, results)
+
 
 if __name__ == "__main__":
     main()
