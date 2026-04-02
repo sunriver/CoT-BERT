@@ -1,0 +1,2 @@
+# 在 default 上按需覆盖（与 cot_bert_evaluation 的 evaluation_linux_cuda.yaml 用法类似）
+model_name_or_path: "../result/CoT-Bert"

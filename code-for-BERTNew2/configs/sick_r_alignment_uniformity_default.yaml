@@ -1,0 +1,29 @@
+# SICK-R 测试集 Alignment / Uniformity 默认配置（键名与 sick_r_alignment_uniformity.py 的 argparse 一致）
+# 在 code-for-BERTNew2 目录下运行：
+#   python sick_r_alignment_uniformity.py
+#   python sick_r_alignment_uniformity.py configs/sick_r_alignment_uniformity_linux_cuda.yaml
+#   python sick_r_alignment_uniformity.py my.yaml --seed 123
+
+model_name_or_path: "../result/CoT-Bert"
+sick_test: "../SentEval/data/downstream/SICK/SICK_test_annotated.txt"
+
+pos_threshold: 4.0
+uniformity_pairs: 100000
+seed: 42
+batch_size: 64
+
+l2_normalize: false
+
+mask_embedding_sentence: true
+mask_num: 2
+mask_embedding_sentence_template: '*cls*_The_sentence_of_"*sent_0*"_means_*mask*_,_so_it_can_be_summarized_as_*mask*_._*sep+*'
+mask_embedding_sentence_delta: false
+# 与 cot_bert_evaluation 的 mask 句向量后处理一致（按需改为 true）
+mask_embedding_sentence_org_mlp: false
+mask_embedding_sentence_use_org_pooler: false
+mask_embedding_sentence_use_pooler: false
+
+pooler: cls
+
+# 需要写 JSON 时再取消注释并填写路径（勿写 null，否则可能被解析为字符串 "None"）
+output_json: "./eval_results/sick_r_align_uniform.json"
