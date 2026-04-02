@@ -72,6 +72,29 @@ def print_table(task_names, scores):
     print(tb)
 
 
+def attach_summary_table_for_log(
+    results, mode, task_names, scores, table_key="summary_table"
+):
+    """
+    与 cot_bert_evaluation_sentemb.py 一致：把当前打印表写入 results，便于日志与后续分析。
+    scores 中为字符串百分数时尝试转为 float，失败则记为 None。
+    """
+    try:
+        summary_scores = []
+        for s in scores:
+            try:
+                summary_scores.append(float(s))
+            except (TypeError, ValueError):
+                summary_scores.append(None)
+        results[table_key] = {
+            "mode": mode,
+            "tasks": list(task_names),
+            "scores": summary_scores,
+        }
+    except Exception as e:
+        print(f"[EvalLog] Failed to build {table_key} for logging: {e}")
+
+
 def save_experiment_log(args, model_args, config, results):
     """
     保存 train_config_full、trainer_state 摘要、Git 分支/commit、本次评估结果到 JSON，
@@ -571,6 +594,9 @@ def main():
             else:
                 scores.append("0.00")
         print_table(task_names, scores)
+        attach_summary_table_for_log(
+            results, args.mode, task_names, scores, table_key="summary_table"
+        )
 
         scores = []
         task_names = []
@@ -583,6 +609,13 @@ def main():
         task_names.append("Avg.")
         scores.append("%.2f" % (sum([float(score) for score in scores]) / len(scores)))
         print_table(task_names, scores)
+        attach_summary_table_for_log(
+            results,
+            args.mode,
+            task_names,
+            scores,
+            table_key="summary_table_transfer",
+        )
 
     elif args.mode == 'test' or args.mode == 'fasttest':
         print("------ %s ------" % (args.mode))
@@ -602,6 +635,9 @@ def main():
         task_names.append("Avg.")
         scores.append("%.2f" % (sum([float(score) for score in scores]) / len(scores)))
         print_table(task_names, scores)
+        attach_summary_table_for_log(
+            results, args.mode, task_names, scores, table_key="summary_table"
+        )
 
         scores = []
         task_names = []
@@ -615,6 +651,13 @@ def main():
         task_names.append("Avg.")
         scores.append("%.2f" % (sum([float(score) for score in scores]) / len(scores)))
         print_table(task_names, scores)
+        attach_summary_table_for_log(
+            results,
+            args.mode,
+            task_names,
+            scores,
+            table_key="summary_table_transfer",
+        )
 
     save_experiment_log(args, None, None, results)
 
