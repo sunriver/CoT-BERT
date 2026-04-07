@@ -1,0 +1,52 @@
+# 多模型 × 多数据集 Alignment / Uniformity 对比（与 alignment_uniformity_lib 一致）
+# 在 code-for-BERTNew2 下运行：
+#   python run_alignment_uniformity_benchmark.py
+#   python run_alignment_uniformity_benchmark.py my_override.yaml
+#
+# l2_normalize: true 时量级接近论文表 5（单位球面）；false 时 Alignment/Uniformity 数值尺度会变大。
+# cls_before_pooler 依赖 BERT 的 token id 101/102；评测 RoBERTa 请使用 pooler: cls 或 avg。
+# STS-B 分数为 0–5，pos_threshold: 4.0 表示「≥4 视为 Alignment 正例」。
+
+defaults:
+  batch_size: 64
+  seed: 42
+  uniformity_pairs: 100000
+  l2_normalize: true
+  mask_num: 2
+  pooler: cls
+  mask_embedding_sentence: false
+  mask_embedding_sentence_template: null
+  mask_embedding_sentence_delta: false
+  mask_embedding_sentence_org_mlp: false
+  mask_embedding_sentence_use_org_pooler: false
+  mask_embedding_sentence_use_pooler: false
+  output_json: "./eval_results/alignment_uniformity_benchmark.json"
+
+datasets:
+  - id: sick_test
+    type: sick
+    path: "../SentEval/data/downstream/SICK/SICK_test_annotated.txt"
+    pos_threshold: 4.0
+  - id: stsb_test
+    type: sts_benchmark
+    path: "../SentEval/data/downstream/STSBenchmark/sts-test.csv"
+    pos_threshold: 4.0
+
+models:
+  - id: bert_base_uncased
+    model_name_or_path: "bert-base-uncased"
+    mask_embedding_sentence: false
+    pooler: cls
+
+  - id: sup_simcse_bert
+    model_name_or_path: "princeton-nlp/sup-simcse-bert-base-uncased"
+    mask_embedding_sentence: false
+    pooler: cls
+
+  - id: cot_bert_local
+    model_name_or_path: "../result/CoT-Bert"
+    mask_embedding_sentence: true
+    mask_embedding_sentence_template: '*cls*_The_sentence_of_"*sent_0*"_means_*mask*_,_so_it_can_be_summarized_as_*mask*_._*sep+*'
+    mask_embedding_sentence_delta: false
+    mask_embedding_sentence_org_mlp: false
+    pooler: cls
