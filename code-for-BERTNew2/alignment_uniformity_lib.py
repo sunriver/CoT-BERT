@@ -279,13 +279,16 @@ def load_pair_dataset(
     path: str,
     dataset_type: str,
 ) -> Tuple[List[Tuple[str, str, float]], List[str]]:
-    """dataset_type: sick | sts_benchmark"""
+    """dataset_type: sick | sts_benchmark（stsb_benchmark 与 sts_benchmark 等价，兼容旧配置键名）"""
     ap = os.path.abspath(path)
     if not os.path.isfile(ap):
         raise FileNotFoundError(f"数据文件不存在: {ap}")
-    if dataset_type == "sick":
+    dt = dataset_type.strip() if isinstance(dataset_type, str) else str(dataset_type)
+    if dt == "stsb_benchmark":
+        dt = "sts_benchmark"
+    if dt == "sick":
         return load_sick_test_rows(ap)
-    if dataset_type == "sts_benchmark":
+    if dt == "sts_benchmark":
         return load_sts_benchmark_test_rows(ap)
     raise ValueError(f"未知 dataset_type: {dataset_type!r}，应为 sick 或 sts_benchmark")
 

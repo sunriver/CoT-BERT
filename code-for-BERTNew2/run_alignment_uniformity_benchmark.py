@@ -104,14 +104,17 @@ def run_one(
     device,
 ) -> Dict[str, Any]:
     ds_id = dataset_cfg.get("id", dataset_cfg.get("path"))
-    ds_type = dataset_cfg["type"]
+    ds_type_raw = dataset_cfg["type"]
     ds_path = dataset_cfg["path"]
     pos_threshold = float(dataset_cfg["pos_threshold"])
 
     model_id = model_cfg.get("id", model_cfg.get("model_name_or_path"))
     model_path = model_cfg["model_name_or_path"]
 
-    pairs, pair_endpoints = aul.load_pair_dataset(ds_path, ds_type)
+    pairs, pair_endpoints = aul.load_pair_dataset(ds_path, ds_type_raw)
+    ds_type = ds_type_raw.strip() if isinstance(ds_type_raw, str) else str(ds_type_raw)
+    if ds_type == "stsb_benchmark":
+        ds_type = "sts_benchmark"
     unique_order = list(dict.fromkeys(pair_endpoints))
 
     mask_emb = _bool(model_cfg.get("mask_embedding_sentence"))
