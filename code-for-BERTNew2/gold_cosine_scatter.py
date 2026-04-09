@@ -20,6 +20,7 @@ import json
 import math
 import os
 import sys
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -315,11 +316,20 @@ def _cosine_rows(
     return np.asarray(golds), np.asarray(coss)
 
 
+def _filename_with_timestamp(filename: str, run_ts: str) -> str:
+    """在扩展名前插入 _{run_ts}。"""
+    if not run_ts.strip():
+        return filename
+    stem, ext = os.path.splitext(filename)
+    return f"{stem}_{run_ts}{ext}"
+
+
 def _figure_path_for_dataset(
     out_dir: str,
     fig_name_template: str,
     dataset_id: str,
     multiple_datasets: bool,
+    run_ts: str,
 ) -> str:
     name = fig_name_template or "gold_cosine_scatter.png"
     if "{dataset_id}" in name:
@@ -327,6 +337,7 @@ def _figure_path_for_dataset(
     elif multiple_datasets:
         stem, ext = os.path.splitext(name)
         name = f"{stem}_{dataset_id}{ext}"
+    name = _filename_with_timestamp(name, run_ts)
     return os.path.join(out_dir, name)
 
 
@@ -413,6 +424,8 @@ def main() -> None:
     if not os.path.isabs(out_dir):
         out_dir = os.path.join(_SCRIPT_DIR, out_dir)
     os.makedirs(out_dir, exist_ok=True)
+
+    run_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     fig_ncols = int(cfg.get("fig_ncols", 3))
     fig_size_s = cfg.get("fig_size") or "15,4"
@@ -573,7 +586,7 @@ def main() -> None:
         fig.suptitle(f"dataset: {dataset_id}", fontsize=11, y=1.02)
         fig.tight_layout()
         fig_path = _figure_path_for_dataset(
-            out_dir, fig_name_tpl, dataset_id, multi_ds
+            out_dir, fig_name_tpl, dataset_id, multi_ds, run_ts
         )
         fig.savefig(fig_path, dpi=150)
         plt.close(fig)
@@ -588,7 +601,9 @@ def main() -> None:
             }
         )
 
-    csv_name = cfg.get("output_csv") or "points.csv"
+    csv_name = _filename_with_timestamp(
+        cfg.get("output_csv") or "points.csv", run_ts
+    )
     csv_path = os.path.join(out_dir, csv_name)
     if all_rows_csv:
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
@@ -599,9 +614,12 @@ def main() -> None:
     else:
         csv_path = ""
 
-    json_name = cfg.get("output_json") or "run_summary.json"
+    json_name = _filename_with_timestamp(
+        cfg.get("output_json") or "run_summary.json", run_ts
+    )
     json_path = os.path.join(out_dir, json_name)
     record = {
+        "run_timestamp": run_ts,
         "datasets": dataset_records,
         "csv": csv_path or None,
     }
