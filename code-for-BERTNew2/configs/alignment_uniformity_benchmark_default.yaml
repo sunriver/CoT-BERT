@@ -27,9 +27,9 @@ datasets:
     type: sick
     path: "../SentEval/data/downstream/SICK/SICK_test_annotated.txt"
     pos_threshold: 4.0
-  - id: stsb_test
-    type: sts_benchmark
-    path: "../SentEval/data/downstream/STSBenchmark/sts-test.csv"
+  - id: sts_test
+    type: stsb_benchmark
+    path: "../SentEval/data/downstream/STS/STSBenchmark/sts-test.csv"
     pos_threshold: 4.0
 
 models:
