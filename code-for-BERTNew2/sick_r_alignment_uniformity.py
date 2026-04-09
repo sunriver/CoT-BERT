@@ -45,6 +45,7 @@ from transformers import AutoModel, AutoTokenizer
 
 # 与 cot_bert_evaluation 共用实现，避免两处漂移（导入该模块会执行其全局初始化，如平台信息打印）。
 from cot_bert_evaluation import denoising
+from eval_run_tag import insert_run_tag_before_ext, resolve_eval_run_tag
 from parse_args_util import load_configs
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -498,6 +499,8 @@ def main():
     print("Uniformity sampling: uniform over pair-endpoint slots (length 2P, multiset).")
 
     if args.output_json:
+        run_meta = resolve_eval_run_tag(args.model_name_or_path)
+        out_path = insert_run_tag_before_ext(args.output_json, run_meta["tag"])
         record = {
             "model_name_or_path": args.model_name_or_path,
             "sick_test": sick_path,
@@ -522,10 +525,14 @@ def main():
                 args.mask_embedding_sentence_use_pooler
             ),
             "mask_num": args.mask_num,
+            "eval_run_tag": run_meta["tag"],
+            "eval_run_tag_source": run_meta["source"],
+            "training_saved_at_iso": run_meta.get("training_saved_at_iso"),
+            "train_logging_dir": run_meta.get("train_logging_dir"),
         }
-        with open(args.output_json, "w", encoding="utf-8") as f:
+        with open(out_path, "w", encoding="utf-8") as f:
             json.dump(record, f, ensure_ascii=False, indent=2)
-        print(f"Wrote {args.output_json}")
+        print(f"Wrote {out_path}")
 
 
 if __name__ == "__main__":

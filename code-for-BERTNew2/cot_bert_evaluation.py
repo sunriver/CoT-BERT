@@ -17,6 +17,7 @@ from transformers import AutoModel, AutoTokenizer
 from lmf_log_util import getMyLogger
 from parse_args_util import load_configs
 from git_repo_info import get_git_repo_info
+from eval_run_tag import resolve_eval_run_tag
 
 # 跨平台设备配置
 from platform_utils import (
@@ -181,6 +182,8 @@ def save_experiment_log(args, model_args, config, results):
     _script_dir = os.path.dirname(os.path.abspath(__file__))
     git_repo_info = get_git_repo_info(_script_dir)
 
+    run_meta = resolve_eval_run_tag(model_dir if isinstance(model_dir, str) else None)
+
     # 2. 只组织需要的信息：训练 full 配置 + 评估结果
     record = {
         "timestamp": datetime.now().isoformat(),
@@ -191,6 +194,10 @@ def save_experiment_log(args, model_args, config, results):
         "trainer_state_summary": trainer_state_summary,
         "git": git_repo_info,
         "results": results_dict,
+        "eval_run_tag": run_meta["tag"],
+        "eval_run_tag_source": run_meta["source"],
+        "training_saved_at_iso": run_meta.get("training_saved_at_iso"),
+        "train_logging_dir": run_meta.get("train_logging_dir"),
     }
 
     # 3. 确定保存路径
@@ -199,9 +206,7 @@ def save_experiment_log(args, model_args, config, results):
 
     # 文件名中加入模式信息，便于区分不同评估模式
     mode = args_dict.get("mode", "unknown")
-    time_str = datetime.now().strftime("%Y%m%d-%H%M%S")
-
-    filename = f"eval_{mode}_{time_str}.json"
+    filename = f"eval_{mode}_{run_meta['tag']}.json"
     save_path = os.path.join(save_dir, filename)
 
     # 3. 写入 JSON 文件

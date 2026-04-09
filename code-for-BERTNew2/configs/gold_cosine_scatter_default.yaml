@@ -6,6 +6,10 @@
 # 自定义 yaml 中的 datasets 按 dataset_id 与默认合并（可只写 path）；runs 仍为整表覆盖。
 #
 # 不使用 alignment_uniformity_benchmark_* 文件名；model 为本地 BERT checkpoint 目录。
+#
+# 评估输出文件名后缀 eval_run_tag：优先 model 目录下 train_config_full.json 的
+# cot_training_meta.eval_output_tag（由 cot_bert_train.py 在保存配置时写入），否则回退
+# logging_dir basename、mtime、墙钟。可 export COT_EVAL_RUN_TAG=myid 覆盖一切。
 
 batch_size: 64
 seed: 42

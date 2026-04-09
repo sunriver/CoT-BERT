@@ -3,6 +3,9 @@
 #   python sick_r_alignment_uniformity.py
 #   python sick_r_alignment_uniformity.py configs/sick_r_alignment_uniformity_linux_cuda.yaml
 #   python sick_r_alignment_uniformity.py my.yaml --seed 123
+#
+# 若配置 output_json：实际写入路径为在扩展名前插入 _{eval_run_tag} 的文件。
+# eval_run_tag 规则见 gold_cosine_scatter_default.yaml 头部说明（COT_EVAL_RUN_TAG 可覆盖）。
 
 model_name_or_path: "../result/CoT-Bert"
 sick_test: "../SentEval/data/downstream/SICK/SICK_test_annotated.txt"

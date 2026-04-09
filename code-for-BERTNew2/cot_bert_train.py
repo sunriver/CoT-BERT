@@ -4,6 +4,7 @@ import json
 sys.path.append('..') 
 
 import os
+from datetime import datetime, timezone
 import torch
 import logging
 import transformers
@@ -948,10 +949,15 @@ def main():
     # 将本次训练用到的全部参数保存到 output_dir，便于评估与复现
     if is_main_process(training_args.local_rank):
         os.makedirs(training_args.output_dir, exist_ok=True)
+        now_utc = datetime.now(timezone.utc)
         full_config = {
             "model_args": _to_json_serializable(model_args),
             "data_args": _to_json_serializable(data_args),
             "training_args": _to_json_serializable(training_args),
+            "cot_training_meta": {
+                "saved_at_iso": now_utc.isoformat(),
+                "eval_output_tag": now_utc.strftime("%Y%m%d-%H%M%S"),
+            },
         }
         full_config_path = os.path.join(training_args.output_dir, "train_config_full.json")
         try:

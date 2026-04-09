@@ -25,6 +25,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
+from eval_run_tag import resolve_eval_run_tag
+
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_CONFIG_PATH = os.path.join(_SCRIPT_DIR, "configs", "gold_cosine_scatter_default.yaml")
 
@@ -414,6 +416,20 @@ def main() -> None:
         print("配置缺少 runs 列表", file=sys.stderr)
         sys.exit(1)
 
+    first_model_dir: Optional[str] = None
+    for run in runs:
+        if not isinstance(run, dict):
+            continue
+        r0 = _resolve_run(encoding_defaults, run)
+        mp0 = r0.get("model_name_or_path")
+        if mp0:
+            first_model_dir = (
+                mp0 if os.path.isabs(mp0) else os.path.join(_SCRIPT_DIR, mp0)
+            )
+            break
+    run_meta = resolve_eval_run_tag(first_model_dir)
+    run_ts = run_meta["tag"]
+
     batch_size = int(cfg.get("batch_size", 64))
     seed = int(cfg.get("seed", 42))
     np.random.seed(seed)
@@ -424,8 +440,6 @@ def main() -> None:
     if not os.path.isabs(out_dir):
         out_dir = os.path.join(_SCRIPT_DIR, out_dir)
     os.makedirs(out_dir, exist_ok=True)
-
-    run_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     fig_ncols = int(cfg.get("fig_ncols", 3))
     fig_size_s = cfg.get("fig_size") or "15,4"
@@ -620,6 +634,11 @@ def main() -> None:
     json_path = os.path.join(out_dir, json_name)
     record = {
         "run_timestamp": run_ts,
+        "eval_run_tag": run_meta["tag"],
+        "eval_run_tag_source": run_meta["source"],
+        "training_saved_at_iso": run_meta.get("training_saved_at_iso"),
+        "train_logging_dir": run_meta.get("train_logging_dir"),
+        "eval_started_at_iso": datetime.now().isoformat(),
         "datasets": dataset_records,
         "csv": csv_path or None,
     }
