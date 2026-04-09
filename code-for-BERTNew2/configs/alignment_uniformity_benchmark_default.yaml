@@ -9,7 +9,7 @@
 
 defaults:
   batch_size: 64
-  seed: 42
+  seed: 0
   uniformity_pairs: 100000
   l2_normalize: true
   mask_num: 2

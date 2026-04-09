@@ -1,0 +1,4 @@
+# 按 dataset_id 覆盖 path（与 default 合并，保留 format/delimiter）
+datasets:
+  - dataset_id: sick_test
+    path: "../SentEval/data/downstream/SICK/SICK_test_annotated.txt"

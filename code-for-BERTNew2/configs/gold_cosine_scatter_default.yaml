@@ -1,0 +1,67 @@
+# 金标 vs 句向量余弦相似度散点实验（与 sick 脚本类似：在 code-for-BERTNew2 下运行）
+#   python gold_cosine_scatter.py
+#   python gold_cosine_scatter.py configs/gold_cosine_scatter_linux_cuda.yaml
+#
+# 注意：自定义 yaml 若包含 runs，将整表替换默认 runs（仅 dict 键才深度合并）。
+# 自定义 yaml 中的 datasets 按 dataset_id 与默认合并（可只写 path）；runs 仍为整表覆盖。
+#
+# 不使用 alignment_uniformity_benchmark_* 文件名；model 为本地 BERT checkpoint 目录。
+
+batch_size: 64
+seed: 42
+cosine_to_unit_interval: true
+output_dir: "./eval_results/gold_cosine_scatter"
+# 多数据集时自动在文件名中区分；也可用占位符：gold_cosine_scatter_{dataset_id}.png
+figure_filename: "gold_cosine_scatter_{dataset_id}.png"
+output_csv: "points.csv"
+output_json: "run_summary.json"
+fig_ncols: 3
+fig_size: "15,4"
+
+datasets:
+  - dataset_id: sts_test
+    path: "../SentEval/data/downstream/STS/STSBenchmark/sts-test.csv"
+    format: sts_benchmark
+    delimiter: "\t"
+    # SentEval 常见 sts-test 无表头（首行即数据）：脚本会自动按列下标 4=gold,5=s1,6=s2 读取
+    # 若文件带表头 sentence1/sentence2/score，会自动用 DictReader
+    # 列顺序非 7 列标准时可在该项下写：
+    # sts_no_header: true
+    # columns:
+    #   column_indices: { gold: 4, sentence_a: 5, sentence_b: 6 }
+  - dataset_id: sick_test
+    path: "../SentEval/data/downstream/SICK/SICK_test_annotated.txt"
+    format: sick_annotated
+    delimiter: "\t"
+  # gold_scale 示例（按需写在某一数据集项下）:
+  #   gold_scale:
+  #     multiply: 5
+  # columns: 仅该项 format 为 generic_tsv 时必填
+
+# 仍支持旧版单键 dataset:（与上面 datasets 二选一）；单数据集可写 dataset_id: default
+
+encoding_defaults:
+  mask_num: 2
+  pooler: cls
+  mask_embedding_sentence: false
+  mask_embedding_sentence_template: '*cls*_The_sentence_of_"*sent_0*"_means_*mask*_,_so_it_can_be_summarized_as_*mask*_._*sep+*'
+  mask_embedding_sentence_delta: false
+  mask_embedding_sentence_org_mlp: false
+  mask_embedding_sentence_use_org_pooler: false
+  mask_embedding_sentence_use_pooler: false
+
+runs:
+  - run_id: bert_base_cls
+    model_name_or_path: "../result/CoT-Bert"
+    mask_embedding_sentence: false
+    pooler: cls
+
+  - run_id: cot_mask
+    model_name_or_path: "../result/CoT-Bert"
+    mask_embedding_sentence: true
+    mask_embedding_sentence_template: '*cls*_The_sentence_of_"*sent_0*"_means_*mask*_,_so_it_can_be_summarized_as_*mask*_._*sep+*'
+
+  - run_id: cot_mask_mlp
+    model_name_or_path: "../result/CoT-Bert"
+    mask_embedding_sentence: true
+    mask_embedding_sentence_org_mlp: true
