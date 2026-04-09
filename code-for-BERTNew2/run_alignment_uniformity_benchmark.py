@@ -34,7 +34,8 @@ _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_BENCHMARK_YAML = os.path.join(
     _SCRIPT_DIR, "configs", "alignment_uniformity_benchmark_default.yaml"
 )
-
+# 配置 Hugging Face 国内镜像，解决连接超时
+os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 
 def _merge_dict(d1: Dict[str, Any], d2: Dict[str, Any]) -> Dict[str, Any]:
     for k, v in d2.items():

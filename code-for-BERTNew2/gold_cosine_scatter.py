@@ -27,6 +27,8 @@ import numpy as np
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_CONFIG_PATH = os.path.join(_SCRIPT_DIR, "configs", "gold_cosine_scatter_default.yaml")
 
+# 配置 Hugging Face 国内镜像，解决连接超时
+os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 
 def merge_dict(d1: Dict[str, Any], d2: Dict[str, Any]) -> Dict[str, Any]:
     """深度合并，d2 优先（与 parse_args_util 行为一致）。"""
