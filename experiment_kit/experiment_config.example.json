@@ -1,0 +1,8 @@
+{
+  "_readme": "复制本文件到子项目根目录（如 code-for-BERTNew2/）并改名为 experiment_config.json，再按需修改。推送到结果仓库的路径为 <experiment_name>/<subdir>/。评估脚本传 project_root_for_git_config 时仅读取该路径；若文件缺失将报错且不推送。",
+  "experiment_name": "my_eval_run",
+  "remote": "https://github.com/your-org/your-eval-results-repo.git",
+  "branch": "main",
+  "subdir": "cot_bert_eval",
+  "push": true
+}
