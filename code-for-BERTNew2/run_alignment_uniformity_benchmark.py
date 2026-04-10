@@ -20,7 +20,7 @@ import json
 import os
 import sys
 from datetime import datetime
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import yaml
@@ -29,8 +29,18 @@ from transformers import AutoModel, AutoTokenizer
 
 import alignment_uniformity_lib as aul
 from cot_bert_evaluation import denoising
+from eval_run_tag import resolve_eval_run_tag
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_COT_BERT_ROOT = os.path.abspath(os.path.join(_SCRIPT_DIR, ".."))
+if _COT_BERT_ROOT not in sys.path:
+    sys.path.insert(0, _COT_BERT_ROOT)
+
+from experiment_kit import (
+    eval_payload_with_headers,
+    load_training_meta,
+    push_eval_artifacts_to_git,
+)
 DEFAULT_BENCHMARK_YAML = os.path.join(
     _SCRIPT_DIR, "configs", "alignment_uniformity_benchmark_default.yaml"
 )
@@ -78,6 +88,14 @@ def _flatten_defaults(defaults: Dict[str, Any]) -> Dict[str, Any]:
     return dict(defaults) if defaults else {}
 
 
+def _filename_with_timestamp(filename: str, run_ts: str) -> str:
+    """在扩展名前插入 _{run_ts}（与 gold_cosine_scatter 一致）。"""
+    if not (run_ts or "").strip():
+        return filename
+    stem, ext = os.path.splitext(filename)
+    return f"{stem}_{run_ts.strip()}{ext}"
+
+
 def _effective_model_config(
     defaults_flat: Dict[str, Any], model_entry: Dict[str, Any]
 ) -> Dict[str, Any]:
@@ -86,6 +104,38 @@ def _effective_model_config(
         if v is not None:
             m[k] = v
     return m
+
+
+def _resolve_local_model_dir(path_str: str, script_dir: str) -> Optional[str]:
+    if not path_str or not isinstance(path_str, str):
+        return None
+    p = path_str if os.path.isabs(path_str) else os.path.join(script_dir, path_str)
+    p = os.path.abspath(os.path.expanduser(p))
+    return p if os.path.isdir(p) else None
+
+
+def _primary_model_dir_benchmark(
+    cfg: Dict[str, Any],
+    defaults_flat: Dict[str, Any],
+    models: List[Dict[str, Any]],
+    script_dir: str,
+) -> Optional[str]:
+    """用于读取 train_config_full：配置 primary_model_name_or_path，否则第一个本地 checkpoint 目录。"""
+    raw = cfg.get("primary_model_name_or_path")
+    if raw is None or raw == "":
+        raw = defaults_flat.get("primary_model_name_or_path")
+    if raw not in (None, ""):
+        d = _resolve_local_model_dir(str(raw), script_dir)
+        if d:
+            return d
+    for m in models:
+        mp = m.get("model_name_or_path")
+        if not mp:
+            continue
+        d = _resolve_local_model_dir(str(mp), script_dir)
+        if d:
+            return d
+    return None
 
 
 def _bool(v: Any, default: bool = False) -> bool:
@@ -318,20 +368,40 @@ def main() -> None:
     if out_path in (None, "", "None"):
         out_path = None
     if out_path:
-        out_dir = os.path.dirname(os.path.abspath(out_path))
+        primary_dir = _primary_model_dir_benchmark(
+            cfg, defaults_flat, models, _SCRIPT_DIR
+        )
+        run_meta = resolve_eval_run_tag(primary_dir)
+        run_ts = str(run_meta.get("tag") or "")
+        out_path_str = str(out_path).strip()
+        parent, base = os.path.split(out_path_str)
+        stamped_base = _filename_with_timestamp(base, run_ts)
+        out_rel = os.path.join(parent, stamped_base) if parent else stamped_base
+        out_abs = os.path.abspath(out_rel)
+        out_dir = os.path.dirname(out_abs)
         if out_dir:
             os.makedirs(out_dir, exist_ok=True)
+        train_meta = load_training_meta(primary_dir)
         payload = {
             "timestamp": datetime.now().isoformat(),
+            "primary_model_dir_for_meta": primary_dir,
+            "eval_run_tag": run_meta.get("tag"),
+            "eval_run_tag_source": run_meta.get("source"),
             "defaults": defaults_section,
             "datasets": datasets,
             "model_entries": models,
             "results": results,
             "summary_matrix": summary_matrix,
         }
-        with open(out_path, "w", encoding="utf-8") as f:
+        payload = eval_payload_with_headers(payload, train_meta)
+        with open(out_abs, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
-        print(f"Wrote {out_path}")
+        print(f"Wrote {out_abs}")
+        push_eval_artifacts_to_git(
+            [out_abs],
+            experiment_id=payload.get("experiment_id"),
+            project_root_for_git_config=_SCRIPT_DIR,
+        )
 
 
 if __name__ == "__main__":

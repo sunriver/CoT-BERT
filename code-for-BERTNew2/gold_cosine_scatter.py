@@ -646,6 +646,65 @@ def main() -> None:
         json.dump(record, f, ensure_ascii=False, indent=2)
     print(f"Wrote {json_path}")
 
+    _cot_root = os.path.dirname(_SCRIPT_DIR)
+    if _cot_root not in sys.path:
+        sys.path.insert(0, _cot_root)
+    from experiment_kit.git_sync import push_eval_artifacts_to_git
+
+    push_paths: List[str] = [json_path]
+    if csv_path:
+        push_paths.append(csv_path)
+    for dr in dataset_records:
+        fp = dr.get("figure")
+        if fp and os.path.isfile(fp):
+            push_paths.append(fp)
+    push_eval_artifacts_to_git(
+        push_paths,
+        experiment_id=run_ts,
+        project_root_for_git_config=_SCRIPT_DIR,
+    )
+
+    # #region agent log
+    try:
+        import time as _agent_time
+
+        _agent_log_path = os.path.abspath(
+            os.path.join(_cot_root, ".cursor", "debug-49fae6.log")
+        )
+        os.makedirs(os.path.dirname(_agent_log_path), exist_ok=True)
+        with open(__file__, encoding="utf-8") as _agent_sf:
+            _agent_src = _agent_sf.read()
+        with open(
+            _agent_log_path,
+            "a",
+            encoding="utf-8",
+        ) as _agent_f:
+            _agent_f.write(
+                json.dumps(
+                    {
+                        "sessionId": "49fae6",
+                        "hypothesisId": "H1",
+                        "location": "gold_cosine_scatter.py:main_end",
+                        "message": "gold_cosine main completed",
+                        "data": {
+                            "argv": sys.argv,
+                            "source_contains_push_eval_call": (
+                                "push_eval_artifacts_to_git" in _agent_src
+                            ),
+                            "push_paths_n": len(push_paths),
+                            "json_path": json_path,
+                            "csv_path": csv_path or "",
+                        },
+                        "timestamp": int(_agent_time.time() * 1000),
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+    except Exception:
+        pass
+    # #endregion
+
 
 if __name__ == "__main__":
     main()

@@ -96,10 +96,20 @@ def attach_summary_table_for_log(
         print(f"[EvalLog] Failed to build {table_key} for logging: {e}")
 
 
+def _filename_with_timestamp(filename: str, run_ts: str) -> str:
+    """在扩展名前插入 _{run_ts}（与 gold_cosine_scatter / alignment benchmark 一致）。"""
+    if not (run_ts or "").strip():
+        return filename
+    stem, ext = os.path.splitext(filename)
+    return f"{stem}_{run_ts.strip()}{ext}"
+
+
 def save_experiment_log(args, model_args, config, results):
     """
     保存 train_config_full、trainer_state 摘要、Git 分支/commit、本次评估结果到 JSON，
     方便后续回顾与复现。
+
+    成功时返回已写入文件的绝对路径，失败返回 None。
     """
     args_dict = vars(args) if args is not None else {}
     results_dict = results if isinstance(results, dict) else {}
@@ -204,18 +214,23 @@ def save_experiment_log(args, model_args, config, results):
     save_dir = os.path.join("..", "result", "CoT-Bert", "eval_logs")
     os.makedirs(save_dir, exist_ok=True)
 
-    # 文件名中加入模式信息，便于区分不同评估模式
+    # 文件名：模式 + checkpoint 的 eval_run_tag + 本次评估墙钟时间，避免同模型重复跑覆盖
     mode = args_dict.get("mode", "unknown")
-    filename = f"eval_{mode}_{run_meta['tag']}.json"
-    save_path = os.path.join(save_dir, filename)
+    base_filename = f"eval_{mode}_{run_meta['tag']}.json"
+    wall_ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    filename = _filename_with_timestamp(base_filename, wall_ts)
+    save_path = os.path.abspath(os.path.join(save_dir, filename))
+    record["eval_log_filename_wall_ts"] = wall_ts
 
     # 3. 写入 JSON 文件
     try:
         with open(save_path, "w", encoding="utf-8") as f:
             json.dump(record, f, ensure_ascii=False, indent=2)
         print(f"[EvalLog] Saved experiment log to: {save_path}")
+        return save_path
     except Exception as e:
         print(f"[EvalLog] Failed to save experiment log: {e}")
+        return None
 
 
 def denoising(model, template, tokenizer, device, mask_num):
@@ -664,7 +679,22 @@ def main():
             table_key="summary_table_transfer",
         )
 
-    save_experiment_log(args, None, None, results)
+    log_path = save_experiment_log(args, None, None, results)
+    if log_path and os.path.isfile(log_path):
+        _script_dir = os.path.dirname(os.path.abspath(__file__))
+        _cot_root = os.path.dirname(_script_dir)
+        if _cot_root not in sys.path:
+            sys.path.insert(0, _cot_root)
+        from experiment_kit.git_sync import push_eval_artifacts_to_git
+
+        exp_tag = resolve_eval_run_tag(
+            getattr(args, "model_name_or_path", None) or None
+        )
+        push_eval_artifacts_to_git(
+            [log_path],
+            experiment_id=exp_tag.get("tag"),
+            project_root_for_git_config=_script_dir,
+        )
 
 
 if __name__ == "__main__":
