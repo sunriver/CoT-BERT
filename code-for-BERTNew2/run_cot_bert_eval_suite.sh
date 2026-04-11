@@ -30,7 +30,7 @@ fi
 
 echo "[run_cot_bert_eval_suite] Using: $PYTHON"
 
-"$PYTHON" cot_bert_evaluation.py configs/train_linux_cuda.yaml
+"$PYTHON" cot_bert_evaluation.py configs/evaluation_linux_cuda.yaml
 "$PYTHON" gold_cosine_scatter.py
 "$PYTHON" run_alignment_uniformity_benchmark.py
 

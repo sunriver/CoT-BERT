@@ -96,14 +96,6 @@ def attach_summary_table_for_log(
         print(f"[EvalLog] Failed to build {table_key} for logging: {e}")
 
 
-def _filename_with_timestamp(filename: str, run_ts: str) -> str:
-    """在扩展名前插入 _{run_ts}（与 gold_cosine_scatter / alignment benchmark 一致）。"""
-    if not (run_ts or "").strip():
-        return filename
-    stem, ext = os.path.splitext(filename)
-    return f"{stem}_{run_ts.strip()}{ext}"
-
-
 def save_experiment_log(args, model_args, config, results):
     """
     保存 train_config_full、trainer_state 摘要、Git 分支/commit、本次评估结果到 JSON，
@@ -214,13 +206,10 @@ def save_experiment_log(args, model_args, config, results):
     save_dir = os.path.join("..", "result", "CoT-Bert", "eval_logs")
     os.makedirs(save_dir, exist_ok=True)
 
-    # 文件名：模式 + checkpoint 的 eval_run_tag + 本次评估墙钟时间，避免同模型重复跑覆盖
+    # 文件名：模式 + checkpoint 的 eval_run_tag（评估时刻见 record["timestamp"]）
     mode = args_dict.get("mode", "unknown")
-    base_filename = f"eval_{mode}_{run_meta['tag']}.json"
-    wall_ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-    filename = _filename_with_timestamp(base_filename, wall_ts)
+    filename = f"eval_{mode}_{run_meta['tag']}.json"
     save_path = os.path.abspath(os.path.join(save_dir, filename))
-    record["eval_log_filename_wall_ts"] = wall_ts
 
     # 3. 写入 JSON 文件
     try:
