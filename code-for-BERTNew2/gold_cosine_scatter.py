@@ -3,6 +3,7 @@
 """
 金标（相似度分数）与句向量余弦相似度散点图实验。
 
+- 每个 run 输出左右两幅子图：原始 Gold–Cosine（Pearson r）与秩空间（Spearman ρ）；run_summary JSON 含 pearson_gold_cos、spearman_gold_cos。
 - 数据集与多模型 runs 由 YAML 配置（默认 configs/gold_cosine_scatter_default.yaml）。
 - 支持 `datasets` 列表（每项含 dataset_id、path、format 等）；仍支持单个 `dataset` 块（兼容旧版）。
 - 第一个参数若为存在的 .yaml/.yml，则与默认配置深度合并（与 sick_r_alignment_uniformity 用法一致）。
@@ -351,6 +352,36 @@ def _pearson(x: np.ndarray, y: np.ndarray) -> float:
     return float(np.corrcoef(x, y)[0, 1])
 
 
+def _average_rank(a: np.ndarray) -> np.ndarray:
+    """1-based average ranks for ties (mergesort stable), for Spearman."""
+    a = np.asarray(a, dtype=float)
+    n = int(a.size)
+    if n == 0:
+        return np.zeros(0, dtype=float)
+    order = np.argsort(a, kind="mergesort")
+    ranks = np.empty(n, dtype=float)
+    i = 0
+    while i < n:
+        j = i
+        v = float(a[order[i]])
+        while j + 1 < n and float(a[order[j + 1]]) == v:
+            j += 1
+        avg_rank = (i + j) / 2.0 + 1.0
+        ranks[order[i : j + 1]] = avg_rank
+        i = j + 1
+    return ranks
+
+
+def _spearman(x: np.ndarray, y: np.ndarray) -> float:
+    x = np.asarray(x)
+    y = np.asarray(y)
+    if len(x) < 2:
+        return float("nan")
+    rx = _average_rank(x)
+    ry = _average_rank(y)
+    return float(np.corrcoef(rx, ry)[0, 1])
+
+
 def load_mask_prediction_mlp_for_gold_scatter(model_name_or_path: str, device: Any):
     """
     将 checkpoint 中 pooler 权重载入 BertForMaskedLM.cls.predictions.transform。
@@ -458,7 +489,9 @@ def main() -> None:
     dataset_records: List[Dict[str, Any]] = []
 
     n_runs = len(runs)
-    nrows = int(math.ceil(n_runs / fig_ncols))
+    runs_per_row = fig_ncols
+    ncols_plot = runs_per_row * 2
+    nrows = int(math.ceil(n_runs / runs_per_row))
 
     for dataset_id, dataset_cfg in dataset_specs:
         pairs = load_dataset_pairs(dataset_cfg)
@@ -473,8 +506,8 @@ def main() -> None:
         run_summaries: List[Dict[str, Any]] = []
         fig, axes = plt.subplots(
             nrows,
-            fig_ncols,
-            figsize=(ws, hs * max(1, nrows)),
+            ncols_plot,
+            figsize=(ws * 2, hs * max(1, nrows)),
             squeeze=False,
         )
 
@@ -562,12 +595,17 @@ def main() -> None:
 
             gold_arr, cos_arr = _cosine_rows(emb_map, pairs, cosine_to_unit)
             rho = _pearson(gold_arr, cos_arr)
+            rho_sp = _spearman(gold_arr, cos_arr)
+            print(
+                f"[{dataset_id}] {run_id}: Pearson r={rho:.6f}, Spearman ρ={rho_sp:.6f}"
+            )
             run_summaries.append(
                 {
                     "dataset_id": dataset_id,
                     "run_id": run_id,
                     "model_name_or_path": mp,
                     "pearson_gold_cos": rho,
+                    "spearman_gold_cos": rho_sp,
                     "n_pairs": len(pairs),
                     "cosine_to_unit_interval": cosine_to_unit,
                 }
@@ -585,17 +623,27 @@ def main() -> None:
                     }
                 )
 
-            ax = axes[idx // fig_ncols][idx % fig_ncols]
-            ax.scatter(gold_arr, cos_arr, s=8, alpha=0.35)
-            ax.set_title(run_id)
-            ax.set_xlabel("Gold score")
-            ax.set_ylabel(
-                "Cosine" + (" (0–1)" if cosine_to_unit else " ([−1,1]→scaled)")
-            )
-            ax.grid(True, alpha=0.3)
+            row = idx // runs_per_row
+            base = (idx % runs_per_row) * 2
+            ax_raw = axes[row][base]
+            ax_rank = axes[row][base + 1]
+            y_label = "Cosine" + (" (0–1)" if cosine_to_unit else " ([−1,1]→scaled)")
+            ax_raw.scatter(gold_arr, cos_arr, s=8, alpha=0.35)
+            ax_raw.set_title(f"{run_id}\nPearson r = {rho:.4f}", fontsize=10)
+            ax_raw.set_xlabel("Gold score")
+            ax_raw.set_ylabel(y_label)
+            ax_raw.grid(True, alpha=0.3)
 
-        for j in range(n_runs, nrows * fig_ncols):
-            axes[j // fig_ncols][j % fig_ncols].set_visible(False)
+            rank_gold = _average_rank(gold_arr)
+            rank_cos = _average_rank(cos_arr)
+            ax_rank.scatter(rank_gold, rank_cos, s=8, alpha=0.35)
+            ax_rank.set_title(f"{run_id}\nSpearman ρ = {rho_sp:.4f}", fontsize=10)
+            ax_rank.set_xlabel("Gold rank (avg)")
+            ax_rank.set_ylabel("Cosine rank (avg)")
+            ax_rank.grid(True, alpha=0.3)
+
+        for j in range(n_runs * 2, nrows * ncols_plot):
+            axes[j // ncols_plot][j % ncols_plot].set_visible(False)
 
         fig.suptitle(f"dataset: {dataset_id}", fontsize=11, y=1.02)
         fig.tight_layout()
