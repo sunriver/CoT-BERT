@@ -8,9 +8,63 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from services.indexer import get_index
-from services.models import CompareResponse, RunDetail, RunListItem
+from services.models import CompareResponse, PointsFile, PointsScatterResponse, RunDetail, RunListItem
 
 app = FastAPI(title="CoT-BERT Experiment Dashboard", version="0.1.0")
+
+_POINTS_ALLOWED_DATASETS = frozenset({"sts_test", "sick_test"})
+_RUN_ID_MAX_LEN = 128
+
+
+def _is_safe_points_basename(name: str) -> bool:
+    if not name or len(name) > 512:
+        return False
+    if "/" in name or "\\" in name or name in (".", ".."):
+        return False
+    if Path(name).name != name:
+        return False
+    lower = name.lower()
+    if not lower.startswith("points_") or not lower.endswith(".csv"):
+        return False
+    return True
+
+
+def _validate_run_id(run_id: str) -> str:
+    rid = (run_id or "").strip()
+    if not rid or len(rid) > _RUN_ID_MAX_LEN:
+        raise HTTPException(status_code=400, detail="Invalid run_id")
+    for ch in rid:
+        if not (ch.isalnum() or ch in "_-"):
+            raise HTTPException(status_code=400, detail="Invalid run_id characters")
+    return rid
+
+
+def _validate_dataset_id(dataset_id: Optional[str]) -> Optional[str]:
+    if dataset_id is None or str(dataset_id).strip() == "":
+        return None
+    ds = str(dataset_id).strip()
+    if ds not in _POINTS_ALLOWED_DATASETS:
+        raise HTTPException(
+            status_code=400,
+            detail="dataset_id must be sts_test or sick_test when provided",
+        )
+    return ds
+
+
+def _parse_points_filenames(files: str) -> List[str]:
+    parts = [f.strip() for f in (files or "").split(",") if f.strip()]
+    if not parts:
+        raise HTTPException(status_code=400, detail="At least one filename required")
+    seen: set[str] = set()
+    out: List[str] = []
+    for p in parts:
+        if not _is_safe_points_basename(p):
+            raise HTTPException(status_code=400, detail=f"Invalid points filename: {p}")
+        if p in seen:
+            continue
+        seen.add(p)
+        out.append(p)
+    return out
 
 app.add_middleware(
     CORSMiddleware,
@@ -107,6 +161,28 @@ def get_run_file(run_id: str, filename: str):
                     media_type=_guess_media(filename),
                 )
     raise HTTPException(status_code=404, detail="File not found for this run")
+
+
+@app.get("/api/points-files", response_model=List[PointsFile])
+def list_points_files():
+    """列出所有可用的 points_*.csv 文件"""
+    idx = get_index()
+    return idx.get_points_files()
+
+
+@app.get("/api/points-scatter", response_model=PointsScatterResponse)
+def get_points_scatter(
+    files: str = Query(..., description="Comma-separated points_*.csv filenames"),
+    run_id: str = Query("cot_mask", description="run_id to filter (default: cot_mask)"),
+    dataset_id: Optional[str] = Query(None, description="Optional dataset_id filter (sts_test|sick_test)"),
+    limit: int = Query(2500, ge=1, le=10000, description="Max points per series"),
+):
+    """返回指定 CSV 中 cot_mask 的金标-余弦散点数据"""
+    idx = get_index()
+    file_list = _parse_points_filenames(files)
+    rid = _validate_run_id(run_id)
+    ds = _validate_dataset_id(dataset_id)
+    return idx.get_points_scatter(file_list, rid, ds, limit)
 
 
 def _guess_media(filename: str) -> str:

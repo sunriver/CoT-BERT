@@ -1,4 +1,10 @@
-import type { CompareResponse, RunDetail, RunListItem } from './types'
+import type {
+  CompareResponse,
+  PointsFile,
+  PointsScatterResponse,
+  RunDetail,
+  RunListItem,
+} from './types'
 
 const base = ''
 
@@ -36,4 +42,26 @@ export async function refreshIndex(): Promise<void> {
 
 export function artifactUrl(runId: string, filename: string): string {
   return `${base}/api/runs/${encodeURIComponent(runId)}/files/${encodeURIComponent(filename)}`
+}
+
+export async function fetchPointsFiles(): Promise<PointsFile[]> {
+  const r = await fetch(`${base}/api/points-files`)
+  if (!r.ok) throw new Error(await r.text())
+  return r.json()
+}
+
+export async function fetchPointsScatter(params: {
+  files: string[]
+  runId?: string
+  datasetId: 'sts_test' | 'sick_test'
+  limit?: number
+}): Promise<PointsScatterResponse> {
+  const u = new URL(`${base}/api/points-scatter`, window.location.origin)
+  u.searchParams.set('files', params.files.join(','))
+  u.searchParams.set('dataset_id', params.datasetId)
+  if (params.runId) u.searchParams.set('run_id', params.runId)
+  if (params.limit != null) u.searchParams.set('limit', String(params.limit))
+  const r = await fetch(u.toString())
+  if (!r.ok) throw new Error(await r.text())
+  return r.json()
 }

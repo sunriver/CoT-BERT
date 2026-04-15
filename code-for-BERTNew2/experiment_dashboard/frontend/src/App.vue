@@ -12,6 +12,7 @@ import { RouterLink, RouterView, useRoute } from 'vue-router'
 
 const route = useRoute()
 const activeKey = computed(() => {
+  if (route.path.startsWith('/gold-cosine-points')) return 'gold-cosine-points'
   if (route.path.startsWith('/compare')) return 'compare'
   if (route.path.startsWith('/runs')) return 'runs'
   return 'runs'
@@ -21,6 +22,15 @@ const menuOptions = ref([
   {
     label: () => h(RouterLink, { to: { name: 'runs' } }, { default: () => '运行列表' }),
     key: 'runs',
+  },
+  {
+    label: () => h(RouterLink, { to: { name: 'compare' } }, { default: () => '指标对比' }),
+    key: 'compare',
+  },
+  {
+    label: () =>
+      h(RouterLink, { to: { name: 'gold-cosine-points' } }, { default: () => '金标–余弦（cot_mask）' }),
+    key: 'gold-cosine-points',
   },
 ])
 </script>

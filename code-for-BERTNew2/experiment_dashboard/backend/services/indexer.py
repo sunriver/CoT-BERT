@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from . import normalize as norm
-from .models import ArtifactRef, RunDetail, RunListItem
+from .models import ArtifactRef, PointsFile, PointsScatterResponse, PointsSeries, RunDetail, RunListItem
 
 
 def _code_for_bert_new2_root() -> Path:
@@ -415,6 +415,73 @@ class RunIndex:
             "param_matrix": param_matrix,
             "param_diff_only": param_diff_only,
         }
+
+    def get_points_files(self) -> List[PointsFile]:
+        """返回所有可用的 points_*.csv 文件（去重）"""
+        files: List[PointsFile] = []
+        seen = set()
+        for d in self.data_dirs:
+            if not d.is_dir():
+                continue
+            try:
+                for p in sorted(d.glob("points_*.csv")):
+                    name = p.name
+                    if name in seen:
+                        continue
+                    seen.add(name)
+                    mtime = p.stat().st_mtime if p.exists() else None
+                    files.append(PointsFile(name=name, mtime=mtime))
+            except OSError:
+                continue
+        return sorted(files, key=lambda f: f.name)
+
+    def get_points_scatter(
+        self,
+        files: List[str],
+        run_id: str = "cot_mask",
+        dataset_id: Optional[str] = None,
+        limit: int = 2500,
+    ) -> PointsScatterResponse:
+        """返回指定 CSV 中 run_id 的散点数据（抽样）"""
+        import csv
+        import random
+
+        series_list: List[PointsSeries] = []
+        spearman_dict: Dict[str, float] = {}
+
+        for fname in files:
+            for d in self.data_dirs:
+                path = d / fname
+                if not path.is_file():
+                    continue
+                data: List[Dict[str, float]] = []
+                with open(path, newline="", encoding="utf-8") as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        if row.get("run_id") != run_id:
+                            continue
+                        if dataset_id and row.get("dataset_id") != dataset_id:
+                            continue
+                        try:
+                            g = float(row["gold"])
+                            c = float(row["cos_pred"])
+                            data.append({"gold": g, "cos": c})
+                        except (ValueError, KeyError):
+                            continue
+                golds = [p["gold"] for p in data]
+                coss = [p["cos"] for p in data]
+                rho = norm.spearman_correlation(golds, coss)
+                if rho is not None:
+                    spearman_dict[fname] = rho
+                if len(data) > limit:
+                    seed = (hash(fname) & 0xFFFFFFFF) ^ 0x9E3779B9
+                    rng = random.Random(seed)
+                    data = rng.sample(data, limit)
+                label = fname.replace("points_", "").replace(".csv", "")
+                series_list.append(PointsSeries(file=fname, label=label, data=data))
+                break
+
+        return PointsScatterResponse(series=series_list, spearman=spearman_dict or None)
 
 
 _index: Optional[RunIndex] = None

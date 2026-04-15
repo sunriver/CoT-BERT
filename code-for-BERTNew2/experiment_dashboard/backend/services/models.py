@@ -66,3 +66,19 @@ class CompareResponse(BaseModel):
     param_keys: List[str]
     param_matrix: Dict[str, Dict[str, Any]]
     param_diff_only: Dict[str, Dict[str, Any]]
+
+
+class PointsFile(BaseModel):
+    name: str
+    mtime: Optional[float] = None
+
+
+class PointsSeries(BaseModel):
+    file: str
+    label: str
+    data: List[Dict[str, float]]  # [{"gold": float, "cos": float}, ...]
+
+
+class PointsScatterResponse(BaseModel):
+    series: List[PointsSeries]
+    spearman: Optional[Dict[str, float]] = None

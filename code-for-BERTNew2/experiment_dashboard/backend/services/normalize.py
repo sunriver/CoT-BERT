@@ -369,3 +369,41 @@ def extract_gold_scatter_metrics(rs: Optional[Dict[str, Any]]) -> Dict[str, Any]
         if m is not None:
             out[f"gold_pearson_mean_{rid}"] = m
     return out
+
+
+def _rank_with_ties(vals: List[float]) -> List[float]:
+    """Average ranks, 1-based."""
+    n = len(vals)
+    if n == 0:
+        return []
+    order = sorted(range(n), key=lambda i: vals[i])
+    ranks = [0.0] * n
+    pos = 0
+    while pos < n:
+        start = pos
+        v0 = vals[order[pos]]
+        while pos + 1 < n and vals[order[pos + 1]] == v0:
+            pos += 1
+        # 1-based ranks for indices start..pos in order[]
+        avg = (start + pos + 2) / 2.0
+        for j in range(start, pos + 1):
+            ranks[order[j]] = avg
+        pos += 1
+    return ranks
+
+
+def spearman_correlation(xs: List[float], ys: List[float]) -> Optional[float]:
+    """Spearman ρ on paired samples (ties: average rank). Returns None if n < 2 or degenerate."""
+    n = len(xs)
+    if n != len(ys) or n < 2:
+        return None
+    rx = _rank_with_ties(list(xs))
+    ry = _rank_with_ties(list(ys))
+    mx = sum(rx) / n
+    my = sum(ry) / n
+    num = sum((rx[i] - mx) * (ry[i] - my) for i in range(n))
+    denx = sum((rx[i] - mx) ** 2 for i in range(n))
+    deny = sum((ry[i] - my) ** 2 for i in range(n))
+    if denx <= 0 or deny <= 0:
+        return None
+    return float(num / (denx**0.5 * deny**0.5))

@@ -58,3 +58,39 @@ export interface CompareResponse {
   param_matrix: Record<string, Record<string, unknown>>
   param_diff_only: Record<string, Record<string, unknown>>
 }
+
+export interface PointsFile {
+  name: string
+  mtime: number | null
+}
+
+export interface PointsScatterPoint {
+  gold: number
+  cos: number
+}
+
+/** 与对比表列一致，便于每个 points CSV 子图旁展示（可由后端直接下发，或由前端根据 run 索引匹配填充） */
+export interface PointsSeriesRunMeta {
+  model_temp: string
+  model_scd_temp: string
+  model_enable: string
+  model_hidden_dropout: string
+  model_hidden_dropout_prob_for_last_column: string
+  model_dropout_negative_prob: string
+  model_dropout_different_prob: string
+  sick_test_rho: string
+  sts_avg_pct: string
+  stsb_test_rho: string
+}
+
+export interface PointsSeries {
+  file: string
+  label: string
+  data: PointsScatterPoint[]
+  meta?: PointsSeriesRunMeta | null
+}
+
+export interface PointsScatterResponse {
+  series: PointsSeries[]
+  spearman?: Record<string, number> | null
+}
