@@ -15,6 +15,7 @@ meta_json: "tsne_sick_r_meta.json"
 sentence_text_max_chars: 200
 
 tsne:
+  n_components: 3
   perplexity: 30
   learning_rate: auto
   max_iter: 1000

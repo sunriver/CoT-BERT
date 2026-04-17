@@ -5,6 +5,7 @@ SICK-R 测试集：随机抽样固定数量句对 → 各消融 checkpoint 编�
 
 - 编码与 pooler / mask 模板逻辑与 gold_cosine_scatter.py 一致（复用 load_dataset_pairs、encode_word_batches 等）。
 - 每个 run 在**该 run 的句向量**上单独 fit t-SNE（坐标不可跨 run 直接叠在同一张平面比较尺度，适合分面图）。
+- `tsne.n_components` 默认 3：坐标 CSV 含 `tsne_x` / `tsne_y` / `tsne_z`；设为 2 时与旧版一致仅两列。
 - 用法（在 code-for-BERTNew2 目录下）:
     python sick_r_tsne_export.py
     python sick_r_tsne_export.py configs/sick_r_tsne_ablation_linux_cuda.yaml
@@ -107,6 +108,7 @@ def _tsne_fit_transform(
     perplexity: float,
     learning_rate: Any,
     max_iter: int,
+    n_components: int,
 ) -> np.ndarray:
     """
     兼容旧版 scikit-learn：老版本 TSNE 使用 n_iter 而非 max_iter，
@@ -134,7 +136,7 @@ def _tsne_fit_transform(
             if lr == "auto" and "learning_rate" not in pnames:
                 continue
             kw: Dict[str, Any] = {
-                "n_components": 2,
+                "n_components": n_components,
                 "random_state": random_state,
                 "perplexity": perplexity,
                 **iter_kw,
@@ -197,6 +199,9 @@ def main() -> None:
     perplexity_req = float(tsne_cfg.get("perplexity", 30))
     tsne_learning_rate = tsne_cfg.get("learning_rate", "auto")
     tsne_max_iter = int(tsne_cfg.get("max_iter", 1000))
+    tsne_n_components = int(tsne_cfg.get("n_components", 3))
+    if tsne_n_components < 2:
+        raise ValueError("tsne.n_components 须 >= 2（t-SNE 输出维度）")
 
     dataset_id, dataset_cfg = _pick_dataset_cfg(cfg)
     all_pairs = load_dataset_pairs(dataset_cfg)
@@ -345,6 +350,7 @@ def main() -> None:
             perplexity=perp,
             learning_rate=tsne_learning_rate,
             max_iter=tsne_max_iter,
+            n_components=tsne_n_components,
         )
         run_summaries.append(
             {
@@ -360,18 +366,19 @@ def main() -> None:
             for side, sent in (("a", sa), ("b", sb)):
                 suid = uid_map[sent]
                 text = sent if len(sent) <= text_max_chars else sent[: text_max_chars - 1] + "…"
-                coords_rows.append(
-                    {
-                        "run_id": run_id,
-                        "sentence_uid": suid,
-                        "pair_id": pair_id,
-                        "side": side,
-                        "relatedness_score": g,
-                        "tsne_x": float(xy[suid, 0]),
-                        "tsne_y": float(xy[suid, 1]),
-                        "sentence_text": text,
-                    }
-                )
+                row_out: Dict[str, Any] = {
+                    "run_id": run_id,
+                    "sentence_uid": suid,
+                    "pair_id": pair_id,
+                    "side": side,
+                    "relatedness_score": g,
+                    "tsne_x": float(xy[suid, 0]),
+                    "tsne_y": float(xy[suid, 1]),
+                    "sentence_text": text,
+                }
+                if tsne_n_components >= 3:
+                    row_out["tsne_z"] = float(xy[suid, 2])
+                coords_rows.append(row_out)
 
     _coord_fields = [
         "run_id",
@@ -381,8 +388,10 @@ def main() -> None:
         "relatedness_score",
         "tsne_x",
         "tsne_y",
-        "sentence_text",
     ]
+    if tsne_n_components >= 3:
+        _coord_fields.append("tsne_z")
+    _coord_fields.append("sentence_text")
     with open(coords_path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=_coord_fields)
         if coords_rows:
@@ -411,6 +420,7 @@ def main() -> None:
         "pairs_csv": pairs_path,
         "coords_csv": coords_path,
         "tsne_requested_perplexity": perplexity_req,
+        "tsne_n_components": tsne_n_components,
         "runs": run_summaries,
     }
     with open(meta_path, "w", encoding="utf-8") as f:
