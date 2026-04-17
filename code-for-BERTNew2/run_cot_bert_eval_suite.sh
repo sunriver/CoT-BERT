@@ -33,5 +33,6 @@ echo "[run_cot_bert_eval_suite] Using: $PYTHON"
 "$PYTHON" cot_bert_evaluation.py configs/evaluation_linux_cuda.yaml
 "$PYTHON" gold_cosine_scatter.py
 "$PYTHON" run_alignment_uniformity_benchmark.py
+"$PYTHON" sick_r_tsne_export.py configs/sick_r_tsne_ablation_default.yaml
 
 echo "[run_cot_bert_eval_suite] 全部完成。"

@@ -1,0 +1,54 @@
+# SICK-R 测试集 t-SNE 数据导出（仅消融 runs；与 gold_cosine_scatter 编码默认值对齐）
+#   python sick_r_tsne_export.py
+#   python sick_r_tsne_export.py configs/sick_r_tsne_ablation_linux_cuda.yaml
+#
+# 输出目录默认 ./eval_results/sick_r_tsne/，文件名带 eval_run_tag（与首个 run 的 checkpoint 解析一致）。
+
+dataset_id_for_tsne: sick_test
+n_pairs: 200
+seed: 0
+batch_size: 64
+output_dir: "./eval_results/sick_r_tsne"
+pairs_csv: "tsne_sick_r_pairs.csv"
+coords_csv: "tsne_sick_r_coords.csv"
+meta_json: "tsne_sick_r_meta.json"
+sentence_text_max_chars: 200
+
+tsne:
+  perplexity: 30
+  learning_rate: auto
+  max_iter: 1000
+
+datasets:
+  - dataset_id: sick_test
+    path: "../SentEval/data/downstream/SICK/SICK_test_annotated.txt"
+    format: sick_annotated
+    delimiter: "\t"
+
+encoding_defaults:
+  mask_num: 2
+  pooler: cls
+  mask_embedding_sentence: false
+  mask_embedding_sentence_template: '*cls*_The_sentence_of_"*sent_0*"_means_*mask*_,_so_it_can_be_summarized_as_*mask*_._*sep+*'
+  mask_embedding_sentence_delta: false
+  mask_embedding_sentence_org_mlp: false
+  mask_embedding_sentence_use_org_pooler: false
+  mask_embedding_sentence_use_pooler: false
+
+# 仅消融变体示例（请按表 2 实际 checkpoint 路径修改）；勿在此加入 SimCSE 等外部基线。
+runs:
+  - run_id: bert_base_cls
+    model_name_or_path: "../result/CoT-Bert"
+    mask_embedding_sentence: false
+    pooler: cls
+
+  - run_id: cot_mask
+    model_name_or_path: "../result/CoT-Bert"
+    mask_embedding_sentence: true
+    mask_embedding_sentence_template: '*cls*_The_sentence_of_"*sent_0*"_means_*mask*_,_so_it_can_be_summarized_as_*mask*_._*sep+*'
+
+  - run_id: cot_mask_mlp
+    model_name_or_path: "../result/CoT-Bert"
+    mask_embedding_sentence: true
+    mask_embedding_sentence_org_mlp: true
+    mask_embedding_sentence_template: '*cls*_The_sentence_of_"*sent_0*"_means_*mask*_,_so_it_can_be_summarized_as_*mask*_._*sep+*'
