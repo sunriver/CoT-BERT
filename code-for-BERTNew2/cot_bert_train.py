@@ -1030,26 +1030,22 @@ def main():
 
         model.bs = tokenizer.encode(model_args.mask_embedding_sentence_bs, add_special_tokens=False)
         model.es = tokenizer.encode(model_args.mask_embedding_sentence_es, add_special_tokens=False)
-        model.mask_embedding_template = tokenizer.encode(model_args.mask_embedding_sentence_bs + model_args.mask_embedding_sentence_es)
-
-        assert len(model.mask_embedding_template) == len(model.bs) + len(model.es) + 2
-        assert model.mask_embedding_template[1 : -1] == model.bs + model.es
+        model.mask_embedding_template = tokenizer.build_inputs_with_special_tokens(model.bs + model.es)
 
         if len(model_args.mask_embedding_sentence_different_template) > 0:
             model.bs2 = tokenizer.encode(model_args.mask_embedding_sentence_bs2, add_special_tokens=False)
             model.es2 = tokenizer.encode(model_args.mask_embedding_sentence_es2, add_special_tokens=False)
-            model.mask_embedding_template2 = tokenizer.encode(model_args.mask_embedding_sentence_bs2 + model_args.mask_embedding_sentence_es2)
+            model.mask_embedding_template2 = tokenizer.build_inputs_with_special_tokens(model.bs2 + model.es2)
         
         if len(model_args.mask_embedding_sentence_negative_template) > 0:
             model.bs3 = tokenizer.encode(model_args.mask_embedding_sentence_bs3, add_special_tokens=False)
             model.es3 = tokenizer.encode(model_args.mask_embedding_sentence_es3, add_special_tokens=False)
-            model.mask_embedding_template3 = tokenizer.encode(model_args.mask_embedding_sentence_bs3 + model_args.mask_embedding_sentence_es3)
+            model.mask_embedding_template3 = tokenizer.build_inputs_with_special_tokens(model.bs3 + model.es3)
         
         if len(model_args.mask_embedding_sentence_different_negative_template) > 0:
             model.bs4 = tokenizer.encode(model_args.mask_embedding_sentence_bs4, add_special_tokens=False)
             model.es4 = tokenizer.encode(model_args.mask_embedding_sentence_es4, add_special_tokens=False)
-            model.mask_embedding_template4 = tokenizer.encode(model_args.mask_embedding_sentence_bs4 + model_args.mask_embedding_sentence_es4)
-
+            model.mask_embedding_template4 = tokenizer.build_inputs_with_special_tokens(model.bs4 + model.es4)
         # CoT-BERT Authors: Since we haven't made any modifications related to the auto-prompt, 
         #                   there's a high probability that the following code may not function correctly.
         if model_args.mask_embedding_sentence_autoprompt:
