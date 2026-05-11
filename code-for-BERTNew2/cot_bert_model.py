@@ -4,7 +4,7 @@ import torch.distributed as dist
 
 from models_scd.modeling_bert_4_28_0 import BertPreTrainedModel, BertModel
 # from transformers.models.bert.modeling_bert import BertPreTrainedModel, BertModel
-from transformers.models.roberta.modeling_roberta import RobertaPreTrainedModel, RobertaModel
+from models_scd.modeling_roberta_4_28_0 import RobertaPreTrainedModel, RobertaModel
 from transformers.modeling_outputs import SequenceClassifierOutput, BaseModelOutputWithPoolingAndCrossAttentions
 
 class MLPLayer(nn.Module):
