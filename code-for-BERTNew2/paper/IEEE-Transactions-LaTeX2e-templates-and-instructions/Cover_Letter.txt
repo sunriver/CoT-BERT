@@ -1,0 +1,18 @@
+Dear Editor-in-Chief,
+
+We are writing to submit our manuscript entitled "MV-RaCL: Multi-View Role-Aware Contrastive Learning for Composition-Sensitive Semantic Matching" for consideration for publication in the IEEE Transactions on Emerging Topics in Computational Intelligence.
+In this work, we address a critical limitation in existing prompt-based contrastive encoders: their "role-agnostic" strategy, which blurs representation boundaries and entangles gradient signals under compositional confounders (e.g., negation, subject-object swapping). To overcome this, we propose the MV-RaCL framework, introducing a View-Role Inductive Bias (VRIB) that explicitly differentiates anchor, positive, and hard-negative training views at the template, encoding (asymmetric dropout), and loss (dual-temperature) levels. 
+
+Our extensive evaluation demonstrates that MV-RaCL significantly improves SICK-R Spearman correlation from 71.41 to 74.65 (+3.24) over the CoT-BERT baseline under a self-contained unsupervised BERT-base setting, without relying on external teachers or reference corpora, while maintaining stable general STS-B performance. We believe our findings offer valuable insights into constructing more reliable alignment and separation boundaries for compositional semantics, which aligns well with the scope of your journal.
+
+We confirm that this manuscript is original, has not been published before, and is not currently being considered for publication elsewhere. All authors have approved the manuscript and agree with its submission to the IEEE Transactions on Emerging Topics in Computational Intelligence.
+
+Thank you for your time and consideration. We look forward to your response.
+
+Sincerely,
+
+Huilai Zou (Corresponding Author)
+School of Artificial Intelligence, Zhejiang Polytechnic University of Mechanical and Electrical Engineering
+Hangzhou 310053, China
+Email: zouhuilai@zime.edu.cn
+On behalf of all authors: Minfeng Lu, Qifei Zhang, Hanlin Qin, Huilai Zou

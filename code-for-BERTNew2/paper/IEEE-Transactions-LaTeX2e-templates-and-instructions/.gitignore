@@ -1,0 +1,42 @@
+# LaTeX 编译产生的临时文件和辅助文件
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.brf
+*.fdb_latexmk
+*.fls
+*.glg
+*.glo
+*.gls
+*.idx
+*.ilg
+*.ind
+*.lof
+*.log
+*.lot
+*.nav
+*.out
+*.run.xml
+*.snm
+*.toc
+*.vrb
+*.synctex.gz
+*.synctex.gz(busy)
+*.synctex(busy)
+*.thm
+*.nav
+*.snm
+*.xdv
+
+# 常用编辑器/IDE的临时文件
+*.swp
+*.bak
+*.sav
+*~
+.vscode/
+
+# 目标输出文件 (如果需要版本控制PDF文件，可以将下面这行注释掉)
+*.pdf
+*.dvi
+*.ps
