@@ -72,6 +72,12 @@ class PrismDecompTrainer(Trainer):
         self.sharded_dpp = False
         self.use_amp = False
 
+    def compute_loss(self, model, inputs, return_outputs=False):
+        aspect_scores = inputs.pop("aspect_scores", None)
+        outputs = model(**inputs, aspect_scores=aspect_scores)
+        loss = outputs.loss
+        return (loss, outputs) if return_outputs else loss
+
     def evaluate(
         self,
         eval_dataset: Optional[Dataset] = None,

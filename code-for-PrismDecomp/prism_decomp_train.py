@@ -141,6 +141,24 @@ class ModelArguments:
         metadata={"help": "Template for sentence representation"}
     )
 
+    # Template pseudo-label supervision (Stage2)
+    lambda_tpl: float = field(
+        default=0.0,
+        metadata={"help": "Weight for template pseudo-label MSE loss (Stage2)"}
+    )
+    lambda_tpl_con: float = field(
+        default=0.0,
+        metadata={"help": "Weight for pseudo-label contrastive loss"}
+    )
+    pseudo_label_path: Optional[str] = field(
+        default=None,
+        metadata={"help": "Path to wiki_pseudo_labels.jsonl from Stage1"}
+    )
+    scalar_target: bool = field(
+        default=True,
+        metadata={"help": "Use scalar pseudo-labels (True) vs vector targets (False)"}
+    )
+
 @dataclass
 class DataTrainingArguments:
     """
@@ -226,7 +244,7 @@ class OurTrainingArguments(TrainingArguments):
         default=None, metadata={"help": "Whether or not to disable the tqdm progress bars."}
     )
     remove_unused_columns: bool = field(
-        default=True, metadata={"help": "Remove columns not required by the model when using an nlp.Dataset."}
+        default=False, metadata={"help": "Keep aspect_scores and other extra columns for PrismDecomp."}
     )
     greater_is_better: bool = field(
         default=True, metadata={"help": "Whether the `metric_for_best_model` should be maximized or not."}
@@ -286,6 +304,7 @@ class OurTrainingArguments(TrainingArguments):
 
 
 from parse_args_util import load_configs
+from wiki_pseudo_dataset import load_pseudo_labels, merge_pseudo_into_dataset_map_fn
 
 def prepare_features(examples, model_args, data_args, tokenizer):
     """
@@ -347,6 +366,9 @@ def prepare_features(examples, model_args, data_args, tokenizer):
     features = {}
     for key in sent_features:
         features[key] = [[sent_features[key][i]] for i in range(total)]
+
+    if "aspect_scores" in examples:
+        features["aspect_scores"] = examples["aspect_scores"]
 
     return features
 
@@ -482,7 +504,22 @@ def main():
     sent1_cname = column_names[0]  # For unsupervised learning, use the same sentence
 
     if training_args.do_train:
-        train_dataset = datasets["train"].map(
+        train_raw = datasets["train"]
+        if model_args.pseudo_label_path and os.path.exists(model_args.pseudo_label_path):
+            logger.info(f"Loading pseudo labels from {model_args.pseudo_label_path}")
+            pseudo_lookup = load_pseudo_labels(model_args.pseudo_label_path)
+            train_raw = train_raw.map(
+                merge_pseudo_into_dataset_map_fn(pseudo_lookup),
+                batched=True,
+                num_proc=data_args.preprocessing_num_workers,
+                load_from_cache_file=not data_args.overwrite_cache,
+            )
+        elif model_args.lambda_tpl > 0:
+            logger.warning(
+                "lambda_tpl > 0 but pseudo_label_path missing; template supervision disabled."
+            )
+
+        train_dataset = train_raw.map(
             lambda examples: prepare_features(examples, model_args, data_args, tokenizer),
             batched=True,
             num_proc=data_args.preprocessing_num_workers,
@@ -523,6 +560,12 @@ def main():
             )
 
             batch = {k: batch[k].view(bs, num_sent, -1) if k in special_keys else batch[k].view(bs, num_sent, -1)[:, 0] for k in batch}
+
+            if "aspect_scores" in features[0]:
+                aspect_scores = torch.tensor(
+                    [f["aspect_scores"] for f in features], dtype=torch.float
+                )
+                batch["aspect_scores"] = aspect_scores
 
             if "label" in batch:
                 batch["labels"] = batch["label"]

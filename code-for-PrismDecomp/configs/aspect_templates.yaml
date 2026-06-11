@@ -1,0 +1,28 @@
+num_semantics: 7
+projection_seed: 42
+normalization: minmax  # minmax | none (applied corpus-wide in stage1)
+
+global_template: 'The sentence of "[X]" means [MASK].'
+
+aspects:
+  - index: 0
+    name: 情感语义
+    template: 'The sentiment of "[X]" is [MASK].'
+  - index: 1
+    name: 主题语义
+    template: 'The topic of "[X]" is [MASK].'
+  - index: 2
+    name: 语法语义
+    template: 'The syntactic structure of "[X]" is [MASK].'
+  - index: 3
+    name: 时序语义
+    template: 'The tense of "[X]" is [MASK].'
+  - index: 4
+    name: 空间语义
+    template: 'The spatial context of "[X]" is [MASK].'
+  - index: 5
+    name: 因果语义
+    template: 'The cause-effect in "[X]" is [MASK].'
+  - index: 6
+    name: 程度语义
+    template: 'The intensity of "[X]" is [MASK].'
