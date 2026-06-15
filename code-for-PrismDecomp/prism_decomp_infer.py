@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """
-PrismDecomp 可解释推理：输出 global + 7 维 aspect 相似度。
+PrismDecomp 可解释推理：输出 global + 7 维主题码相似度（7×d cosine）。
 """
 
 import argparse
 import json
-import sys
 
 import torch
 from transformers import AutoConfig, AutoTokenizer
@@ -65,6 +64,8 @@ def main():
     parser.add_argument("--sent_a", default="the man isn't singing")
     parser.add_argument("--sent_b", default="the man is singing")
     parser.add_argument("--templates", default="configs/aspect_templates.yaml")
+    parser.add_argument("--compress_dim", type=int, default=8)
+    parser.add_argument("--compressor_ckpt", default="preprocessed/theme_compressor.pt")
     parser.add_argument("--device", default=None)
     args = parser.parse_args()
 
@@ -90,9 +91,13 @@ def main():
         num_semantics = len(aspect_names)
         temperature = 0.05
         lambda2 = 0.1
-        lambda_tpl = 0.0
-        lambda_tpl_con = 0.0
-        scalar_target = True
+        lambda_sup = 0.0
+        lambda_theme = 0.0
+        compress_dim = args.compress_dim
+        compress_mode = aspect_cfg.get("compress_mode", "mlp")
+        compressor_hidden = aspect_cfg.get("compressor_hidden", 256)
+        compressor_ckpt = args.compressor_ckpt
+        sup_loss_type = "cosine"
         mask_embedding_sentence = True
         mask_embedding_sentence_template = global_template
 

@@ -1,42 +1,62 @@
 """
-Wiki 语料 + Stage1 伪标签 join。
+Wiki 语料 + Stage1 主题缓存 join（Stage2 只读）。
 """
 
-import json
+import logging
 from typing import Dict, List, Optional
 
-from aspect_template_utils import load_pseudo_labels_jsonl
+from aspect_template_utils import load_theme_cache
+
+logger = logging.getLogger(__name__)
 
 
-def load_pseudo_labels(path: str) -> Dict[str, List[float]]:
-    return load_pseudo_labels_jsonl(path)
+def load_theme_targets(path: str) -> Dict[str, List[List[float]]]:
+    return load_theme_cache(path)
 
 
-def attach_pseudo_labels_to_examples(
+def attach_theme_targets_to_examples(
     examples: dict,
-    pseudo_lookup: Dict[str, List[float]],
-    default_scores: Optional[List[float]] = None,
+    theme_lookup: Dict[str, List[List[float]]],
+    default_themes: Optional[List[List[float]]] = None,
+    num_themes: int = 7,
+    compress_dim: int = 8,
 ) -> dict:
     """
-    为 batched examples 添加 aspect_scores 字段。
+    为 batched examples 添加 theme_targets 字段。
     examples['text']: list of str
     """
-    num_aspects = len(next(iter(pseudo_lookup.values()))) if pseudo_lookup else 7
-    if default_scores is None:
-        default_scores = [0.5] * num_aspects
+    if default_themes is None:
+        default_themes = [[0.0] * compress_dim for _ in range(num_themes)]
 
-    scores = []
+    themes = []
+    missing = 0
     for text in examples["text"]:
         if text is None:
             text = " "
-        s = pseudo_lookup.get(text, default_scores)
-        scores.append(s)
+        t = theme_lookup.get(text)
+        if t is None:
+            missing += 1
+            t = default_themes
+        themes.append(t)
 
-    examples["aspect_scores"] = scores
+    if missing > 0:
+        logger.warning("Theme cache miss for %d sentences in batch.", missing)
+
+    examples["theme_targets"] = themes
     return examples
 
 
-def merge_pseudo_into_dataset_map_fn(pseudo_lookup: Dict[str, List[float]]):
+def merge_theme_cache_into_dataset_map_fn(
+    theme_lookup: Dict[str, List[List[float]]],
+    num_themes: int = 7,
+    compress_dim: int = 8,
+):
     def _fn(examples):
-        return attach_pseudo_labels_to_examples(examples, pseudo_lookup)
+        return attach_theme_targets_to_examples(
+            examples,
+            theme_lookup,
+            num_themes=num_themes,
+            compress_dim=compress_dim,
+        )
+
     return _fn

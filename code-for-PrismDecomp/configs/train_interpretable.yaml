@@ -27,12 +27,16 @@ semantic_weights_learnable: true
 
 remove_unused_columns: false
 
-# Template pseudo-label Stage2
-lambda_tpl: 1.0
-lambda_tpl_con: 0.0
-pseudo_label_path: "preprocessed/wiki_pseudo_labels.jsonl"
-scalar_target: true
+# Theme cache Stage2 (read-only)
+lambda_sup: 1.0
+lambda_theme: 0.5
+theme_cache_path: "preprocessed/wiki_theme_cache.jsonl"
+compress_dim: 8
+compress_mode: mlp
+compressor_hidden: 256
+compressor_ckpt: "preprocessed/theme_compressor.pt"
+sup_loss_type: cosine
 
-# Global sentence template
+# Global CoT / mask prompt
 mask_embedding_sentence: true
 mask_embedding_sentence_template: "The sentence of \"[X]\" means [MASK]."

@@ -1,12 +1,11 @@
 """
-Aspect 模板与伪标签数值化工具（Stage1 / Stage2 共用）。
+Aspect 模板与主题缓存工具（Stage1 / Stage2 共用）。
 """
 
 import json
 import os
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
-import numpy as np
 import torch
 import yaml
 
@@ -23,36 +22,6 @@ def get_aspect_names(config: Dict[str, Any]) -> List[str]:
 def get_aspect_templates_list(config: Dict[str, Any]) -> List[str]:
     aspects = sorted(config["aspects"], key=lambda x: x["index"])
     return [a["template"] for a in aspects]
-
-
-def build_fixed_projections(
-    hidden_size: int,
-    num_aspects: int,
-    seed: int = 42,
-) -> torch.Tensor:
-    """固定随机投影 W_i: (num_aspects, hidden_size)。"""
-    gen = torch.Generator()
-    gen.manual_seed(seed)
-    weights = torch.randn(num_aspects, hidden_size, generator=gen)
-    weights = weights / weights.norm(dim=1, keepdim=True)
-    return weights
-
-
-def vector_to_scalar(
-    vectors: torch.Tensor,
-    projection_weights: torch.Tensor,
-) -> torch.Tensor:
-    """
-    vectors: (batch, hidden) 或 (hidden,)
-    projection_weights: (num_aspects, hidden)
-    返回: (batch, num_aspects) 或 (num_aspects,)
-    """
-    if vectors.dim() == 1:
-        normed = torch.nn.functional.normalize(vectors.unsqueeze(0), p=2, dim=-1)
-        scores = torch.sigmoid(normed @ projection_weights.t())
-        return scores.squeeze(0)
-    normed = torch.nn.functional.normalize(vectors, p=2, dim=-1)
-    return torch.sigmoid(normed @ projection_weights.t())
 
 
 def encode_template_sentence(
@@ -90,41 +59,52 @@ def extract_mask_hidden(
     return torch.stack(reps, dim=0)
 
 
-def normalize_scores_corpus(
-    scores_list: List[List[float]],
-    method: str = "minmax",
-) -> Tuple[List[List[float]], Dict[str, Any]]:
-    """全库 min-max 归一化，返回归一化分数与统计元数据。"""
-    arr = np.array(scores_list, dtype=np.float32)
-    stats = {"method": method, "mins": [], "maxs": []}
-    if method == "minmax":
-        for col in range(arr.shape[1]):
-            mi, ma = float(arr[:, col].min()), float(arr[:, col].max())
-            stats["mins"].append(mi)
-            stats["maxs"].append(ma)
-            if ma - mi > 1e-8:
-                arr[:, col] = (arr[:, col] - mi) / (ma - mi)
-            else:
-                arr[:, col] = 0.5
-    normalized = arr.tolist()
-    return normalized, stats
+def load_cached_texts(path: str) -> Set[str]:
+    texts = set()
+    if not path or not os.path.exists(path):
+        return texts
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            texts.add(json.loads(line)["text"])
+    return texts
 
 
-def load_pseudo_label_stats(stats_path: str) -> Dict[str, Any]:
-    if not stats_path or not os.path.exists(stats_path):
-        return {}
-    with open(stats_path, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def load_pseudo_labels_jsonl(path: str) -> Dict[str, List[float]]:
-    """text -> normalized aspect scores [s0..sK-1]"""
-    lookup = {}
+def load_theme_cache(path: str) -> Dict[str, List[List[float]]]:
+    """text -> themes (num_themes, compress_dim)"""
+    lookup: Dict[str, List[List[float]]] = {}
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
             obj = json.loads(line)
-            lookup[obj["text"]] = obj["s"]
+            lookup[obj["text"]] = obj["themes"]
     return lookup
+
+
+def load_theme_cache_stats(stats_path: str) -> Dict[str, Any]:
+    if not stats_path or not os.path.exists(stats_path):
+        return {}
+    with open(stats_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def validate_theme_cache(
+    theme_lookup: Dict[str, List[List[float]]],
+    expected_themes: int,
+    expected_dim: int,
+) -> None:
+    if not theme_lookup:
+        raise ValueError("Theme cache is empty.")
+    sample = next(iter(theme_lookup.values()))
+    if len(sample) != expected_themes:
+        raise ValueError(
+            f"Expected {expected_themes} themes, got {len(sample)} in cache."
+        )
+    if len(sample[0]) != expected_dim:
+        raise ValueError(
+            f"Expected compress_dim={expected_dim}, got {len(sample[0])} in cache."
+        )

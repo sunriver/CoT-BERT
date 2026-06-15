@@ -8,9 +8,13 @@ from transformers.models.bert.modeling_bert import BertPreTrainedModel, BertMode
 from transformers.modeling_outputs import SequenceClassifierOutput, BaseModelOutputWithPoolingAndCrossAttentions
 
 from template_supervision_losses import (
-    AspectScalarHeads,
-    TemplateSupervisionLoss,
-    PseudoContrastiveLoss,
+    ThemeVectorSupervisionLoss,
+    ThemeContrastiveLoss,
+)
+from theme_compressor import (
+    SharedThemeCompressor,
+    load_compressor_checkpoint,
+    theme_code_orth_loss,
 )
 
 
@@ -363,9 +367,14 @@ def prism_decomp_init(
     temperature=0.05,
     lambda2=0.1,
     num_semantics=7,
-    lambda_tpl=0.0,
-    lambda_tpl_con=0.0,
-    scalar_target=True,
+    compress_dim=8,
+    lambda_sup=0.0,
+    lambda_theme=0.0,
+    sup_loss_type="cosine",
+    compress_mode="mlp",
+    compressor_hidden=256,
+    projection_seed=42,
+    compressor_ckpt=None,
 ):
     """
     棱镜分解模型初始化函数
@@ -408,17 +417,33 @@ def prism_decomp_init(
             f"语义维度{i+1}" for i in range(len(predefined_dimensions), num_semantics)
         ]
     
-    # 模板伪标签监督：每维标量预测头
-    cls.aspect_scalar_heads = AspectScalarHeads(config.hidden_size, num_semantics)
-    cls.template_supervision_loss = TemplateSupervisionLoss(scalar_target=scalar_target)
-    cls.pseudo_contrastive_loss = PseudoContrastiveLoss()
+    # 共享主题压缩器（与 Stage1 同结构）
+    cls.theme_compressor = SharedThemeCompressor(
+        hidden_dim=config.hidden_size,
+        compress_dim=compress_dim,
+        hidden_size=compressor_hidden,
+        mode=compress_mode,
+        projection_seed=projection_seed,
+    )
+    if compressor_ckpt:
+        ckpt_compressor, _, _ = load_compressor_checkpoint(
+            compressor_ckpt,
+            hidden_dim=config.hidden_size,
+            compress_dim=compress_dim,
+            hidden_size=compressor_hidden,
+            mode=compress_mode,
+            projection_seed=projection_seed,
+        )
+        cls.theme_compressor.load_state_dict(ckpt_compressor.state_dict())
 
-    # 存储损失函数权重
-    cls.lambda2 = lambda2
-    cls.lambda_tpl = lambda_tpl
-    cls.lambda_tpl_con = lambda_tpl_con
-    cls.scalar_target = scalar_target
+    cls.theme_supervision_loss = ThemeVectorSupervisionLoss(loss_type=sup_loss_type)
+    cls.theme_contrastive_loss = ThemeContrastiveLoss(temperature=temperature)
+
+    cls.compress_dim = compress_dim
+    cls.lambda_sup = lambda_sup
+    cls.lambda_theme = lambda_theme
     cls.temperature = temperature
+    cls.lambda2 = lambda2
     
     cls.init_weights()
 
@@ -434,13 +459,12 @@ def prism_decomp_forward(cls,
                         output_attentions=None,
                         output_hidden_states=None,
                         labels=None,
-                        aspect_scores=None,
+                        theme_targets=None,
                         return_dict=None,
 ):
     """
     棱镜分解前向传播函数
-    实现多语义句子表示学习训练逻辑
-    aspect_scores: (batch, num_semantics) Stage1 伪标签，可选
+    theme_targets: (batch, num_semantics, compress_dim) Stage1 缓存，可选
     """
     return_dict = return_dict if return_dict is not None else cls.config.use_return_dict
     
@@ -503,11 +527,15 @@ def prism_decomp_forward(cls,
     # 通过多语义分解增强获取所有子语义h_i和h_i_enhanced（不提前归一化）
     # h_i_list: list of (batch_size, hidden_dim) 所有子语义h_i（分解后的原始表示）
     # h_i_enhanced_list: list of (batch_size, hidden_dim) 所有增强后的子语义h_i_enhanced
-    h_i_list, h_i_enhanced_list, orth_loss = cls.multisemantic_spr(
+    h_i_list, h_i_enhanced_list, decomp_orth_loss = cls.multisemantic_spr(
         anchor_h, 
-        compute_orth_loss=True, 
+        compute_orth_loss=False, 
         return_all_semantics=True
     )
+    
+    h_i_enhanced_stacked = torch.stack(h_i_enhanced_list, dim=1)
+    T_pred = cls.theme_compressor(h_i_enhanced_stacked, normalize=True)
+    theme_orth_loss = theme_code_orth_loss(T_pred)
     
     # 使用残差融合器融合所有增强后的子语义h_i_enhanced与原始h，得到综合语义表示h+
     # 通过残差连接放大子语义信号，同时保留原始h的信息
@@ -548,24 +576,23 @@ def prism_decomp_forward(cls,
     # 计算综合语义InfoNCE损失
     global_infonce_loss = loss_fct(cos_sim_global, labels_global)
     
-    # ========== 模板伪标签监督 L_tpl ==========
-    tpl_loss = torch.tensor(0.0, device=anchor_h.device)
-    tpl_con_loss = torch.tensor(0.0, device=anchor_h.device)
-    if aspect_scores is not None and getattr(cls, "lambda_tpl", 0.0) > 0:
-        aspect_scores = aspect_scores.to(anchor_h.device, dtype=anchor_h.dtype)
-        pred_scores = cls.aspect_scalar_heads(h_i_enhanced_list)
-        tpl_loss = cls.template_supervision_loss(pred_scores, aspect_scores, scalar_mode=True)
-    if aspect_scores is not None and getattr(cls, "lambda_tpl_con", 0.0) > 0:
-        aspect_scores = aspect_scores.to(anchor_h.device, dtype=anchor_h.dtype)
-        tpl_con_loss = cls.pseudo_contrastive_loss(h_i_enhanced_list, aspect_scores)
+    # ========== 主题向量监督 L_sup + 主题对比 L_theme ==========
+    sup_loss = torch.tensor(0.0, device=anchor_h.device)
+    theme_con_loss = torch.tensor(0.0, device=anchor_h.device)
+    if theme_targets is not None:
+        theme_targets = theme_targets.to(anchor_h.device, dtype=anchor_h.dtype)
+        if getattr(cls, "lambda_sup", 0.0) > 0:
+            sup_loss = cls.theme_supervision_loss(T_pred, theme_targets)
+        if getattr(cls, "lambda_theme", 0.0) > 0:
+            theme_con_loss = cls.theme_contrastive_loss(T_pred, theme_targets)
 
     # ========== 总损失 ==========
-    # L = L_global + λ_tpl·L_tpl + λ_tpl_con·L_tpl_con + λ₂·L_orth
+    # L = L_global + λ_theme·L_theme + λ_sup·L_sup + λ₂·L_orth
     total_loss = (
         global_infonce_loss
-        + cls.lambda2 * orth_loss
-        + getattr(cls, "lambda_tpl", 0.0) * tpl_loss
-        + getattr(cls, "lambda_tpl_con", 0.0) * tpl_con_loss
+        + cls.lambda2 * theme_orth_loss
+        + getattr(cls, "lambda_sup", 0.0) * sup_loss
+        + getattr(cls, "lambda_theme", 0.0) * theme_con_loss
     )
     
     # 使用正样本h+作为输出表示
@@ -658,9 +685,8 @@ def sentemb_forward(
 
         aspect_reprs = None
         if return_aspects:
-            aspect_reprs = torch.stack(
-                [F.normalize(h, p=2, dim=-1) for h in h_i_enhanced_list], dim=1
-            )
+            h_stack = torch.stack(h_i_enhanced_list, dim=1)
+            aspect_reprs = cls.theme_compressor(h_stack, normalize=True)
 
     if not return_dict:
         if return_aspects:
@@ -695,9 +721,15 @@ class BertForPrismDecomp(BertPreTrainedModel):
         # 从model_args获取温度参数、lambda2参数和num_semantics参数
         temperature = getattr(self.model_args, 'temperature', 0.05) if self.model_args else 0.05
         lambda2 = getattr(self.model_args, 'lambda2', 0.1) if self.model_args else 0.1
-        lambda_tpl = getattr(self.model_args, 'lambda_tpl', 0.0) if self.model_args else 0.0
-        lambda_tpl_con = getattr(self.model_args, 'lambda_tpl_con', 0.0) if self.model_args else 0.0
-        scalar_target = getattr(self.model_args, 'scalar_target', True) if self.model_args else True
+        lambda2 = getattr(self.model_args, 'lambda2', 0.1) if self.model_args else 0.1
+        lambda_sup = getattr(self.model_args, 'lambda_sup', 0.0) if self.model_args else 0.0
+        lambda_theme = getattr(self.model_args, 'lambda_theme', 0.0) if self.model_args else 0.0
+        compress_dim = getattr(self.model_args, 'compress_dim', 8) if self.model_args else 8
+        sup_loss_type = getattr(self.model_args, 'sup_loss_type', 'cosine') if self.model_args else 'cosine'
+        compress_mode = getattr(self.model_args, 'compress_mode', 'mlp') if self.model_args else 'mlp'
+        compressor_hidden = getattr(self.model_args, 'compressor_hidden', 256) if self.model_args else 256
+        projection_seed = getattr(self.model_args, 'projection_seed', 42) if self.model_args else 42
+        compressor_ckpt = getattr(self.model_args, 'compressor_ckpt', None) if self.model_args else None
         num_semantics = getattr(self.model_args, 'num_semantics', 7) if self.model_args else 7
         
         prism_decomp_init(
@@ -705,9 +737,14 @@ class BertForPrismDecomp(BertPreTrainedModel):
             temperature=temperature,
             lambda2=lambda2,
             num_semantics=num_semantics,
-            lambda_tpl=lambda_tpl,
-            lambda_tpl_con=lambda_tpl_con,
-            scalar_target=scalar_target,
+            compress_dim=compress_dim,
+            lambda_sup=lambda_sup,
+            lambda_theme=lambda_theme,
+            sup_loss_type=sup_loss_type,
+            compress_mode=compress_mode,
+            compressor_hidden=compressor_hidden,
+            projection_seed=projection_seed,
+            compressor_ckpt=compressor_ckpt,
         )
 
     @classmethod
@@ -748,7 +785,7 @@ class BertForPrismDecomp(BertPreTrainedModel):
         return_dict=None,
         sent_emb=False,
         return_aspects=False,
-        aspect_scores=None,
+        theme_targets=None,
     ):
         if sent_emb:
             return sentemb_forward(self, self.bert,
@@ -773,7 +810,7 @@ class BertForPrismDecomp(BertPreTrainedModel):
                 head_mask=head_mask,
                 inputs_embeds=inputs_embeds,
                 labels=labels,
-                aspect_scores=aspect_scores,
+                theme_targets=theme_targets,
                 output_attentions=output_attentions,
                 output_hidden_states=output_hidden_states,
                 return_dict=return_dict,

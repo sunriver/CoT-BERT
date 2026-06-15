@@ -141,22 +141,42 @@ class ModelArguments:
         metadata={"help": "Template for sentence representation"}
     )
 
-    # Template pseudo-label supervision (Stage2)
-    lambda_tpl: float = field(
+    # Theme cache supervision (Stage2)
+    lambda_sup: float = field(
         default=0.0,
-        metadata={"help": "Weight for template pseudo-label MSE loss (Stage2)"}
+        metadata={"help": "Weight for theme vector supervision L_sup (Stage2)"}
     )
-    lambda_tpl_con: float = field(
+    lambda_theme: float = field(
         default=0.0,
-        metadata={"help": "Weight for pseudo-label contrastive loss"}
+        metadata={"help": "Weight for theme contrastive loss L_theme"}
     )
-    pseudo_label_path: Optional[str] = field(
+    theme_cache_path: Optional[str] = field(
         default=None,
-        metadata={"help": "Path to wiki_pseudo_labels.jsonl from Stage1"}
+        metadata={"help": "Path to wiki_theme_cache.jsonl from Stage1 (read-only)"}
     )
-    scalar_target: bool = field(
-        default=True,
-        metadata={"help": "Use scalar pseudo-labels (True) vs vector targets (False)"}
+    compress_dim: int = field(
+        default=8,
+        metadata={"help": "Theme compression dimension (must match Stage1 cache)"}
+    )
+    compress_mode: str = field(
+        default="mlp",
+        metadata={"help": "Shared compressor mode: mlp | fixed_linear"}
+    )
+    compressor_hidden: int = field(
+        default=256,
+        metadata={"help": "Hidden size of shared theme compressor MLP"}
+    )
+    compressor_ckpt: Optional[str] = field(
+        default=None,
+        metadata={"help": "Path to theme_compressor.pt from Stage1a"}
+    )
+    projection_seed: int = field(
+        default=42,
+        metadata={"help": "Random seed for fixed_linear compressor"}
+    )
+    sup_loss_type: str = field(
+        default="cosine",
+        metadata={"help": "Theme supervision loss: cosine | mse"}
     )
 
 @dataclass
@@ -244,7 +264,7 @@ class OurTrainingArguments(TrainingArguments):
         default=None, metadata={"help": "Whether or not to disable the tqdm progress bars."}
     )
     remove_unused_columns: bool = field(
-        default=False, metadata={"help": "Keep aspect_scores and other extra columns for PrismDecomp."}
+        default=False, metadata={"help": "Keep theme_targets and other extra columns for PrismDecomp."}
     )
     greater_is_better: bool = field(
         default=True, metadata={"help": "Whether the `metric_for_best_model` should be maximized or not."}
@@ -304,7 +324,8 @@ class OurTrainingArguments(TrainingArguments):
 
 
 from parse_args_util import load_configs
-from wiki_pseudo_dataset import load_pseudo_labels, merge_pseudo_into_dataset_map_fn
+from wiki_pseudo_dataset import load_theme_targets, merge_theme_cache_into_dataset_map_fn
+from aspect_template_utils import load_theme_cache_stats, validate_theme_cache
 
 def prepare_features(examples, model_args, data_args, tokenizer):
     """
@@ -367,8 +388,8 @@ def prepare_features(examples, model_args, data_args, tokenizer):
     for key in sent_features:
         features[key] = [[sent_features[key][i]] for i in range(total)]
 
-    if "aspect_scores" in examples:
-        features["aspect_scores"] = examples["aspect_scores"]
+    if "theme_targets" in examples:
+        features["theme_targets"] = examples["theme_targets"]
 
     return features
 
@@ -505,18 +526,35 @@ def main():
 
     if training_args.do_train:
         train_raw = datasets["train"]
-        if model_args.pseudo_label_path and os.path.exists(model_args.pseudo_label_path):
-            logger.info(f"Loading pseudo labels from {model_args.pseudo_label_path}")
-            pseudo_lookup = load_pseudo_labels(model_args.pseudo_label_path)
+        if model_args.theme_cache_path and os.path.exists(model_args.theme_cache_path):
+            logger.info(f"Loading theme cache from {model_args.theme_cache_path}")
+            theme_lookup = load_theme_targets(model_args.theme_cache_path)
+            stats_path = model_args.theme_cache_path.replace(".jsonl", "_stats.json")
+            cache_stats = load_theme_cache_stats(stats_path)
+            if cache_stats.get("compress_dim") and cache_stats["compress_dim"] != model_args.compress_dim:
+                logger.warning(
+                    "compress_dim=%s differs from cache stats %s; using model arg.",
+                    model_args.compress_dim,
+                    cache_stats["compress_dim"],
+                )
+            validate_theme_cache(
+                theme_lookup,
+                expected_themes=model_args.num_semantics,
+                expected_dim=model_args.compress_dim,
+            )
             train_raw = train_raw.map(
-                merge_pseudo_into_dataset_map_fn(pseudo_lookup),
+                merge_theme_cache_into_dataset_map_fn(
+                    theme_lookup,
+                    num_themes=model_args.num_semantics,
+                    compress_dim=model_args.compress_dim,
+                ),
                 batched=True,
                 num_proc=data_args.preprocessing_num_workers,
                 load_from_cache_file=not data_args.overwrite_cache,
             )
-        elif model_args.lambda_tpl > 0:
+        elif model_args.lambda_sup > 0 or model_args.lambda_theme > 0:
             logger.warning(
-                "lambda_tpl > 0 but pseudo_label_path missing; template supervision disabled."
+                "lambda_sup/lambda_theme > 0 but theme_cache_path missing; supervision disabled."
             )
 
         train_dataset = train_raw.map(
@@ -561,11 +599,11 @@ def main():
 
             batch = {k: batch[k].view(bs, num_sent, -1) if k in special_keys else batch[k].view(bs, num_sent, -1)[:, 0] for k in batch}
 
-            if "aspect_scores" in features[0]:
-                aspect_scores = torch.tensor(
-                    [f["aspect_scores"] for f in features], dtype=torch.float
+            if "theme_targets" in features[0]:
+                theme_targets = torch.tensor(
+                    [f["theme_targets"] for f in features], dtype=torch.float
                 )
-                batch["aspect_scores"] = aspect_scores
+                batch["theme_targets"] = theme_targets
 
             if "label" in batch:
                 batch["labels"] = batch["label"]

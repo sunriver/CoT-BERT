@@ -1,6 +1,9 @@
 num_semantics: 7
+compress_dim: 8
+compressor_hidden: 256
+compress_mode: mlp
 projection_seed: 42
-normalization: minmax  # minmax | none (applied corpus-wide in stage1)
+compressor_ckpt: preprocessed/theme_compressor.pt
 
 global_template: 'The sentence of "[X]" means [MASK].'
 

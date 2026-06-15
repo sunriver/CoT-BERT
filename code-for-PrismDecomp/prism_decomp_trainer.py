@@ -73,8 +73,8 @@ class PrismDecompTrainer(Trainer):
         self.use_amp = False
 
     def compute_loss(self, model, inputs, return_outputs=False):
-        aspect_scores = inputs.pop("aspect_scores", None)
-        outputs = model(**inputs, aspect_scores=aspect_scores)
+        theme_targets = inputs.pop("theme_targets", None)
+        outputs = model(**inputs, theme_targets=theme_targets)
         loss = outputs.loss
         return (loss, outputs) if return_outputs else loss
 

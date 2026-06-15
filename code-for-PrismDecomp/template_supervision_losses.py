@@ -1,89 +1,62 @@
 """
-Stage2: 模板伪标签监督损失。
+Stage2: 主题向量监督与对比损失。
 """
-
-from typing import List, Optional
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 
-class AspectScalarHeads(nn.Module):
-    """每个子语义 h_i 对应一个标量预测头。"""
+class ThemeVectorSupervisionLoss(nn.Module):
+    """L_sup: 对齐 Stage1 缓存的 7×d 主题向量。"""
 
-    def __init__(self, hidden_dim: int, num_aspects: int = 7):
+    def __init__(self, loss_type: str = "cosine"):
         super().__init__()
-        self.heads = nn.ModuleList([
-            nn.Linear(hidden_dim, 1) for _ in range(num_aspects)
-        ])
-
-    def forward(self, h_i_enhanced_list: List[torch.Tensor]) -> torch.Tensor:
-        """
-        Returns: (batch, num_aspects) 预测标量
-        """
-        preds = []
-        for i, h_i in enumerate(h_i_enhanced_list):
-            preds.append(self.heads[i](h_i).squeeze(-1))
-        return torch.stack(preds, dim=1)
-
-
-class TemplateSupervisionLoss(nn.Module):
-    """L_tpl: MSE(pred_i, s_i_cached) 或向量 cosine 对齐。"""
-
-    def __init__(self, scalar_target: bool = True):
-        super().__init__()
-        self.scalar_target = scalar_target
+        self.loss_type = loss_type
         self.mse = nn.MSELoss()
 
-    def forward(
-        self,
-        preds_or_h_list,
-        aspect_targets: torch.Tensor,
-        scalar_mode: bool = True,
-    ) -> torch.Tensor:
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         """
-        scalar_mode=True: preds_or_h_list 为 (batch, num_aspects) 预测
-        scalar_mode=False: preds_or_h_list 为 h_i list, aspect_targets 为 (batch, num_aspects, hidden)
+        pred/target: (batch, num_themes, compress_dim)
         """
-        if scalar_mode:
-            return self.mse(preds_or_h_list, aspect_targets)
+        if self.loss_type == "mse":
+            return self.mse(pred, target)
 
-        losses = []
-        for i, h_i in enumerate(preds_or_h_list):
-            target_v = aspect_targets[:, i, :]
-            target_v = F.normalize(target_v, p=2, dim=-1)
-            h_norm = F.normalize(h_i, p=2, dim=-1)
-            losses.append(1.0 - (h_norm * target_v).sum(dim=-1).mean())
-        return torch.stack(losses).mean()
+        pred_n = F.normalize(pred, p=2, dim=-1)
+        target_n = F.normalize(target, p=2, dim=-1)
+        cos = (pred_n * target_n).sum(dim=-1)
+        return (1.0 - cos).mean()
 
 
-class PseudoContrastiveLoss(nn.Module):
-    """可选: batch 内 |s_i(a)-s_i(b)| 小则 cos(h_i^a,h_i^b) 大。"""
+class ThemeContrastiveLoss(nn.Module):
+    """L_theme: 每个主题维度的 batch 内 InfoNCE（pred 对齐 cached teacher）。"""
 
-    def __init__(self, eps: float = 1e-8):
+    def __init__(self, temperature: float = 0.05):
         super().__init__()
-        self.eps = eps
+        self.temperature = temperature
+        self.ce = nn.CrossEntropyLoss()
 
-    def forward(
-        self,
-        h_i_enhanced_list: List[torch.Tensor],
-        aspect_scores: torch.Tensor,
-    ) -> torch.Tensor:
-        batch_size = aspect_scores.size(0)
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        """
+        pred/target: (batch, num_themes, compress_dim), target 通常 detach
+        """
+        batch_size, num_themes, _ = pred.shape
         if batch_size < 2:
-            return torch.tensor(0.0, device=aspect_scores.device, requires_grad=True)
+            return pred.new_zeros(())
+
+        pred_n = F.normalize(pred, p=2, dim=-1)
+        target_n = F.normalize(target.detach(), p=2, dim=-1)
 
         losses = []
-        for i, h_i in enumerate(h_i_enhanced_list):
-            h_norm = F.normalize(h_i, p=2, dim=-1)
-            sim_matrix = h_norm @ h_norm.t()
-            s_i = aspect_scores[:, i]
-            label_sim = 1.0 - torch.abs(s_i.unsqueeze(0) - s_i.unsqueeze(1))
-            label_sim = label_sim.clamp(0.0, 1.0)
-            eye = torch.eye(batch_size, device=sim_matrix.device, dtype=torch.bool)
-            pred = (sim_matrix + 1.0) / 2.0
-            diff = (pred - label_sim) ** 2
-            diff = diff.masked_fill(eye, 0.0)
-            losses.append(diff.sum() / (batch_size * (batch_size - 1) + self.eps))
+        for i in range(num_themes):
+            anchor = pred_n[:, i, :]
+            teacher = target_n[:, i, :]
+            pos = (anchor * teacher).sum(dim=-1, keepdim=True) / self.temperature
+            neg = anchor @ teacher.t() / self.temperature
+            eye = torch.eye(batch_size, device=anchor.device, dtype=torch.bool)
+            neg = neg.masked_fill(eye, float("-inf"))
+            logits = torch.cat([pos, neg], dim=1)
+            labels = torch.zeros(batch_size, dtype=torch.long, device=anchor.device)
+            losses.append(self.ce(logits, labels))
+
         return torch.stack(losses).mean()
