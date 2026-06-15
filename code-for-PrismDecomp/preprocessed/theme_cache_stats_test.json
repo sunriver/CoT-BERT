@@ -1,8 +1,0 @@
-{
-  "num_themes": 7,
-  "compress_dim": 8,
-  "compressor_ckpt": "preprocessed/theme_compressor_test.pt",
-  "model_path": "/Users/lmf/Documents/local/code/pretrain_models/bert-base-uncased",
-  "templates_config": "configs/aspect_templates.yaml",
-  "num_samples": 4
-}
