@@ -129,8 +129,14 @@ class ModelArguments:
     )
     mask_embedding_sentence_template: str = field(
         default="The sentence of \"[X]\" means [MASK].",
-        metadata={"help": "Template for sentence representation (not used in evaluation)"}
+        metadata={"help": "CoT template for evaluation"}
     )
+    mask_num: int = field(default=2)
+    mask_embedding_sentence_different_template: str = field(default="")
+    mask_embedding_sentence_negative_template: str = field(default="")
+    mask_embedding_sentence_delta: bool = field(default=False)
+    mask_embedding_sentence_delta_no_delta_eval: bool = field(default=True)
+    scd_temp: float = field(default=0.05)
 
 @dataclass
 class DataTrainingArguments:
@@ -290,6 +296,12 @@ class OurTrainingArguments(TrainingArguments):
 
 
 from parse_args_util import load_configs
+from cot_prompt_utils import (
+    build_single_cot_eval_input,
+    parse_all_cot_templates,
+    register_cot_templates_on_model,
+    uses_cot_multi_view,
+)
 
 def print_table(task_names, scores):
     """打印结果表格"""
@@ -394,10 +406,10 @@ def main():
     
     model.resize_token_embeddings(len(tokenizer))
 
-    # Setup model for PrismDecomp
-    model.pad_token_id = tokenizer.pad_token_id
-    
-    # Set model_args for sentemb_forward
+    if uses_cot_multi_view(model_args):
+        parse_all_cot_templates(model_args, tokenizer)
+        register_cot_templates_on_model(model, model_args, tokenizer)
+
     model.model_args = model_args
 
     # Determine device
@@ -439,28 +451,39 @@ def main():
             sentences = [' '.join(s) for s in batch]
 
             # 使用模板编码每个句子（与训练时保持一致）
-            if model_args and hasattr(model_args, 'mask_embedding_sentence') and model_args.mask_embedding_sentence:
-                # 应用模板：构造完整模板字符串（优化：利用tokenizer批量处理）
-                template = model_args.mask_embedding_sentence_template
-                parts = template.split('[X]')
-                prefix = parts[0]  # "The sentence of \""
-                suffix = parts[1] if len(parts) > 1 else " means [MASK]."
-                
-                # 为每个句子构造完整的模板字符串
-                templated_sentences = []
-                for sent in sentences:
-                    # 构造完整模板字符串："The sentence of "原句子" means [MASK]."
-                    full_text = prefix + sent + suffix
-                    templated_sentences.append(full_text)
-                
-                # 批量编码（利用tokenizer的内置优化）
-                batch_input = tokenizer.batch_encode_plus(
-                    templated_sentences,
-                    return_tensors='pt',
-                    padding=True,
-                )
-                for k in batch_input:
-                    batch_input[k] = batch_input[k].to(device) if batch_input[k] is not None else None
+            if model_args and getattr(model_args, 'mask_embedding_sentence', False):
+                if uses_cot_multi_view(model_args):
+                    all_input_ids, all_masks = [], []
+                    for sent in sentences:
+                        ids = build_single_cot_eval_input(
+                            sent, model_args, tokenizer,
+                            max_seq_length=data_args.max_seq_length,
+                        )
+                        all_input_ids.append(ids)
+                        all_masks.append([1] * len(ids))
+                    max_len = max(len(x) for x in all_input_ids)
+                    pad_id = tokenizer.pad_token_id
+                    for i in range(len(all_input_ids)):
+                        pad = max_len - len(all_input_ids[i])
+                        all_input_ids[i] = all_input_ids[i] + [pad_id] * pad
+                        all_masks[i] = all_masks[i] + [0] * pad
+                    batch_input = {
+                        'input_ids': torch.tensor(all_input_ids, dtype=torch.long, device=device),
+                        'attention_mask': torch.tensor(all_masks, dtype=torch.long, device=device),
+                    }
+                else:
+                    template = model_args.mask_embedding_sentence_template
+                    parts = template.split('[X]')
+                    prefix = parts[0]
+                    suffix = parts[1] if len(parts) > 1 else " means [MASK]."
+                    templated_sentences = [prefix + sent + suffix for sent in sentences]
+                    batch_input = tokenizer.batch_encode_plus(
+                        templated_sentences,
+                        return_tensors='pt',
+                        padding=True,
+                    )
+                    for k in batch_input:
+                        batch_input[k] = batch_input[k].to(device) if batch_input[k] is not None else None
             else:
                 # 不使用模板，直接编码
                 batch_input = tokenizer.batch_encode_plus(

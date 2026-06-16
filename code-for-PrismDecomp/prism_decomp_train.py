@@ -138,7 +138,39 @@ class ModelArguments:
     )
     mask_embedding_sentence_template: str = field(
         default="The sentence of \"[X]\" means [MASK].",
-        metadata={"help": "Template for sentence representation"}
+        metadata={"help": "CoT template (pos-1): *cls*_..._*sent_0*_*mask*..."}
+    )
+    mask_num: int = field(
+        default=2,
+        metadata={"help": "Number of [MASK] tokens in CoT template (default 2: meaning + summary)"}
+    )
+    mask_embedding_sentence_different_template: str = field(
+        default="",
+        metadata={"help": "CoT different column template (pos-2)"}
+    )
+    mask_embedding_sentence_negative_template: str = field(
+        default="",
+        metadata={"help": "CoT hard negative template (neg-1)"}
+    )
+    mask_embedding_sentence_different_negative_template: str = field(
+        default="",
+        metadata={"help": "CoT second hard negative template (neg-2, optional)"}
+    )
+    mask_embedding_sentence_delta: bool = field(
+        default=False,
+        metadata={"help": "Enable CoT delta denoising on MASK representations"}
+    )
+    mask_embedding_sentence_delta_freeze: bool = field(
+        default=False,
+        metadata={"help": "Freeze delta denoising gradients"}
+    )
+    mask_embedding_sentence_delta_no_delta_eval: bool = field(
+        default=True,
+        metadata={"help": "Skip delta denoising during evaluation/inference"}
+    )
+    scd_temp: float = field(
+        default=0.05,
+        metadata={"help": "Temperature for hard-negative similarity in L_cot"}
     )
 
     # Theme cache supervision (Stage2)
@@ -322,12 +354,16 @@ class OurTrainingArguments(TrainingArguments):
 from parse_args_util import load_configs, load_yaml_config
 from wiki_pseudo_dataset import load_theme_targets, merge_theme_cache_into_dataset_map_fn
 from aspect_template_utils import load_theme_cache_stats, validate_theme_cache
+from cot_prompt_utils import (
+    build_cot_views_for_sentences,
+    parse_all_cot_templates,
+    register_cot_templates_on_model,
+    uses_cot_multi_view,
+)
 
 def prepare_features(examples, model_args, data_args, tokenizer):
     """
-    单视图数据准备函数
-    使用模板为每个句子生成一个语义视图，然后进行棱镜分解
-    对每个子语义采用SPR方式提高语义表示效果，降低计算开销
+    CoT 多视图数据准备：每句 3 列对比 prompt（template / different / negative）。
     """
     total = len(examples['text'])
 
@@ -336,36 +372,31 @@ def prepare_features(examples, model_args, data_args, tokenizer):
         if examples['text'][idx] is None:
             examples['text'][idx] = " "
 
-    # 单视图：每个句子只处理一次，不复制（节省计算）
     sentences = examples['text']
 
-    if model_args.mask_embedding_sentence:
-        # 解析模板，分离为前缀和后缀
-        # 模板格式: "The sentence of \"[X]\" means [MASK]."
+    if model_args.mask_embedding_sentence and uses_cot_multi_view(model_args):
+        sent_features, num_views = build_cot_views_for_sentences(
+            sentences, model_args, tokenizer, data_args.max_seq_length
+        )
+    elif model_args.mask_embedding_sentence:
         template = model_args.mask_embedding_sentence_template
         parts = template.split('[X]')
-        prefix = parts[0]  # "The sentence of \""
-        suffix = parts[1] if len(parts) > 1 else " means [MASK]."  # "\" means [MASK]."
-        
-        # 编码前缀和后缀（去掉首尾的特殊token）
+        prefix = parts[0]
+        suffix = parts[1] if len(parts) > 1 else " means [MASK]."
         bs = tokenizer.encode(prefix, add_special_tokens=False)
         es = tokenizer.encode(suffix, add_special_tokens=False)
-        
         sent_features = {'input_ids': [], 'attention_mask': []}
-        
-        for i, s in enumerate(sentences):
-            # 编码句子内容
-            s = tokenizer.encode(s, add_special_tokens=False)[:data_args.max_seq_length]
-            # 组合: [CLS] + prefix + sentence + suffix + [SEP]
-            sent_features['input_ids'].append([tokenizer.cls_token_id] + bs + s + es + [tokenizer.sep_token_id])
-        
-        # 填充到相同长度
+        for s in sentences:
+            s_ids = tokenizer.encode(s, add_special_tokens=False)[:data_args.max_seq_length]
+            sent_features['input_ids'].append(
+                [tokenizer.cls_token_id] + bs + s_ids + es + [tokenizer.sep_token_id]
+            )
         ml = max(len(i) for i in sent_features['input_ids'])
-        
         for i in range(len(sent_features['input_ids'])):
             t = sent_features['input_ids'][i]
             sent_features['input_ids'][i] = t + [tokenizer.pad_token_id] * (ml - len(t))
             sent_features['attention_mask'].append(len(t) * [1] + (ml - len(t)) * [0])
+        num_views = 1
     else:
         # 原始编码方式
         sent_features = {'input_ids': [], 'attention_mask': []}
@@ -378,11 +409,24 @@ def prepare_features(examples, model_args, data_args, tokenizer):
             t = sent_features['input_ids'][i]
             sent_features['input_ids'][i] = t + [tokenizer.pad_token_id] * (ml - len(t))
             sent_features['attention_mask'].append(len(t) * [1] + (ml - len(t)) * [0])
+        num_views = 1
 
-    # 单视图：每个样本只返回一个视图
     features = {}
-    for key in sent_features:
-        features[key] = [[sent_features[key][i]] for i in range(total)]
+    if model_args.mask_embedding_sentence and uses_cot_multi_view(model_args):
+        has_neg = bool(getattr(model_args, "mask_embedding_sentence_negative_template", ""))
+        for key in sent_features:
+            features[key] = []
+            for idx in range(total):
+                views = [
+                    sent_features[key][idx],
+                    sent_features[key][total + idx],
+                ]
+                if has_neg:
+                    views.append(sent_features[key][2 * total + idx])
+                features[key].append(views)
+    else:
+        for key in sent_features:
+            features[key] = [[sent_features[key][i]] for i in range(total)]
 
     if "theme_targets" in examples:
         features["theme_targets"] = examples["theme_targets"]
@@ -515,6 +559,10 @@ def main():
         raise NotImplementedError
     
     model.resize_token_embeddings(len(tokenizer))
+
+    if model_args.mask_embedding_sentence and uses_cot_multi_view(model_args):
+        parse_all_cot_templates(model_args, tokenizer)
+        register_cot_templates_on_model(model, model_args, tokenizer)
 
     # Prepare features
     column_names = datasets["train"].column_names

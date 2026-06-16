@@ -12,6 +12,7 @@ from theme_compressor import (
     SharedThemeCompressor,
     load_compressor_checkpoint,
 )
+from cot_prompt_utils import uses_cot_multi_view
 
 
 class OrthogonalConstraint(nn.Module):
@@ -286,6 +287,164 @@ class Similarity(nn.Module):
         return self.cos(x, y) / self.temp
 
 
+class MLPLayer(nn.Module):
+    """CoT summary MASK 表示投影头。"""
+
+    def __init__(self, config, scale=1):
+        super().__init__()
+        self.dense = nn.Linear(config.hidden_size * scale, config.hidden_size * scale)
+        self.activation = nn.Tanh()
+
+    def forward(self, features, **kwargs):
+        return self.activation(self.dense(features))
+
+
+def _uses_cot(cls):
+    ma = getattr(cls, "model_args", None)
+    if ma is None or not getattr(ma, "mask_embedding_sentence", False):
+        return False
+    return getattr(ma, "mask_num", 1) >= 2 and bool(
+        getattr(ma, "mask_embedding_sentence_different_template", "")
+    )
+
+
+def denoising(cls, encoder, template, type="pos-1", device="cuda", evaluation=False):
+    """CoT delta 去噪：按可变句子长度估计模板噪声。"""
+    freeze = getattr(cls.model_args, "mask_embedding_sentence_delta_freeze", False)
+    with torch.set_grad_enabled(not freeze and not evaluation):
+        if type == "pos-1":
+            bs, es = cls.bs, cls.es
+        elif type == "pos-2":
+            bs, es = cls.bs2, cls.es2
+        elif type == "neg-1":
+            bs, es = cls.bs3, cls.es3
+        else:
+            raise ValueError(f"unknown denoising type {type}")
+
+        input_ids, attention_mask = [], []
+        for i in range(cls.total_length - len(template) + 1):
+            input_ids.append(
+                [template[0]]
+                + bs
+                + [cls.pad_token_id] * i
+                + es
+                + [template[-1]]
+                + [cls.pad_token_id] * (cls.total_length - len(template) - i)
+            )
+            attention_mask.append(
+                [1] * (len(template) + i)
+                + [0] * (cls.total_length - len(template) - i)
+            )
+
+        input_ids = torch.tensor(input_ids, device=device, dtype=torch.long)
+        attention_mask = torch.tensor(attention_mask, device=device, dtype=torch.long)
+
+        mask = input_ids == cls.mask_token_id
+        ctx = torch.no_grad() if evaluation else torch.enable_grad()
+        with ctx:
+            outputs = encoder(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                output_hidden_states=True,
+                return_dict=True,
+            )
+            noise = outputs.last_hidden_state[mask]
+
+        noise = noise.view(-1, cls.mask_num, noise.shape[-1])
+        return noise, len(template)
+
+
+def _extract_cot_pooler(cls, encoder, input_ids, attention_mask, evaluation=False):
+    """
+    双 MASK 提取 + delta 去噪 + cot_mlp。
+    返回 pooler_output: (batch_size, num_sent, mask_num, hidden_dim)
+    """
+    batch_size = input_ids.size(0)
+    num_sent = input_ids.size(1)
+    flat_ids = input_ids.view(-1, input_ids.size(-1))
+    flat_mask = attention_mask.view(-1, attention_mask.size(-1))
+
+    ma = cls.model_args
+    if getattr(ma, "mask_embedding_sentence_delta", False) and (
+        not evaluation or not getattr(ma, "mask_embedding_sentence_delta_no_delta_eval", True)
+    ):
+        noise1, template_length1 = denoising(
+            cls, encoder, cls.mask_embedding_template, type="pos-1",
+            device=input_ids.device, evaluation=evaluation,
+        )
+        noise2, template_length2 = None, None
+        noise3, template_length3 = None, None
+        if getattr(ma, "mask_embedding_sentence_different_template", ""):
+            noise2, template_length2 = denoising(
+                cls, encoder, cls.mask_embedding_template2, type="pos-2",
+                device=input_ids.device, evaluation=evaluation,
+            )
+        if getattr(ma, "mask_embedding_sentence_negative_template", ""):
+            noise3, template_length3 = denoising(
+                cls, encoder, cls.mask_embedding_template3, type="neg-1",
+                device=input_ids.device, evaluation=evaluation,
+            )
+
+    outputs = encoder(
+        input_ids=flat_ids,
+        attention_mask=flat_mask,
+        output_hidden_states=False,
+        return_dict=True,
+    )
+    last_hidden = outputs.last_hidden_state
+    pooler = last_hidden[flat_ids == cls.mask_token_id]
+    pooler = pooler.view(-1, cls.mask_num, pooler.shape[-1])
+    pooler = pooler.view(batch_size, num_sent, cls.mask_num, -1)
+
+    if getattr(ma, "mask_embedding_sentence_delta", False) and (
+        not evaluation or not getattr(ma, "mask_embedding_sentence_delta_no_delta_eval", True)
+    ):
+        attn = attention_mask.view(batch_size, num_sent, -1)
+        entire_length = attn.sum(-1)
+        max_idx = noise1.size(0) - 1
+
+        token_length = torch.clamp(entire_length - template_length1, 0, max_idx)
+        pooler[:, 0, 0, :] -= noise1[token_length[:, 0], 0, :]
+        pooler[:, 0, 1, :] -= noise1[token_length[:, 0], 1, :]
+
+        if noise2 is not None:
+            token_length = torch.clamp(entire_length - template_length2, 0, max_idx)
+            pooler[:, 1, 0, :] -= noise2[token_length[:, 1], 0, :]
+            pooler[:, 1, 1, :] -= noise2[token_length[:, 1], 1, :]
+
+        if noise3 is not None and num_sent >= 3:
+            token_length = torch.clamp(entire_length - template_length3, 0, max_idx)
+            pooler[:, 2, 0, :] -= noise3[token_length[:, 2], 0, :]
+            pooler[:, 2, 1, :] -= noise3[token_length[:, 2], 1, :]
+
+    pooler = pooler.reshape(batch_size * num_sent * cls.mask_num, -1)
+    pooler = cls.cot_mlp(pooler)
+    pooler = pooler.view(batch_size, num_sent, cls.mask_num, -1)
+    return pooler
+
+
+def compute_cot_loss(cls, pooler_output, num_sent, device):
+    """L_cot: summary MASK (m2) 跨列 InfoNCE + hard negative。"""
+    z1_m2 = pooler_output[:, 0, 1, :]
+    if num_sent < 2:
+        return torch.tensor(0.0, device=device, requires_grad=True)
+
+    z2_m2 = pooler_output[:, 1, 1, :]
+    cos_sim_m2 = cls.sim(z1_m2.unsqueeze(1), z2_m2.unsqueeze(0))
+
+    if num_sent == 3:
+        z3_m2 = pooler_output[:, 2, 1, :]
+        z1_z3 = cls.sim_scd(z1_m2.unsqueeze(1), z3_m2.unsqueeze(0))
+        z2_z3 = cls.sim_scd(z2_m2.unsqueeze(1), z3_m2.unsqueeze(0))
+        cos_sim_m2 = torch.cat([cos_sim_m2, z1_z3, z2_z3], dim=1)
+
+    labels = torch.arange(cos_sim_m2.size(0), dtype=torch.long, device=device)
+    loss = nn.CrossEntropyLoss()(cos_sim_m2, labels)
+    if torch.isnan(loss) or torch.isinf(loss):
+        loss = torch.tensor(0.0, device=device, requires_grad=True)
+    return loss
+
+
 class MultiSemanticSPR(nn.Module):
     """
     多语义分解增强模型：语义分解 + 局部信号增强
@@ -366,6 +525,7 @@ def prism_decomp_init(
     compress_dim=8,
     lambda_sup=0.0,
     sup_loss_type="cosine",
+    scd_temp=0.05,
     compress_mode="mlp",
     compressor_hidden=256,
     projection_seed=42,
@@ -393,8 +553,10 @@ def prism_decomp_init(
         fusion_weight=0.5  # 融合权重，可学习
     )
     
-    # 初始化相似度计算模块（用于InfoNCE损失）
-    cls.similarity = Similarity(temp=temperature)
+    # 初始化相似度计算模块（L_cot）
+    cls.sim = Similarity(temp=temperature)
+    cls.sim_scd = Similarity(temp=scd_temp)
+    cls.cot_mlp = MLPLayer(config, scale=1)
     
     # 设置语义维度数量（从配置文件读取）
     cls.num_semantics = num_semantics
@@ -456,144 +618,82 @@ def prism_decomp_forward(cls,
                         return_dict=None,
 ):
     """
-    棱镜分解前向传播函数
+    棱镜分解前向传播：L = L_cot + λ_sup·L_sup（无 L_global）
     theme_targets: (batch, num_semantics, compress_dim) Stage1 缓存，可选
     """
     return_dict = return_dict if return_dict is not None else cls.config.use_return_dict
-    
+
     batch_size = input_ids.size(0)
     num_sent = input_ids.size(1)
-
-    # Flatten input for encoding
-    input_ids = input_ids.view((-1, input_ids.size(-1)))
-    attention_mask = attention_mask.view((-1, attention_mask.size(-1)))
 
     if token_type_ids is not None:
         token_type_ids = token_type_ids.view((-1, token_type_ids.size(-1)))
 
-    # BERT编码
-    outputs = encoder(
-        input_ids=input_ids,
-        attention_mask=attention_mask,
-        token_type_ids=token_type_ids,
-        position_ids=position_ids,
-        head_mask=head_mask,
-        inputs_embeds=inputs_embeds,
-        output_attentions=output_attentions,
-        output_hidden_states=False,
-        return_dict=True,
-    )
+    cot_mode = _uses_cot(cls)
 
-    # 提取句子表示
-    if hasattr(cls, 'model_args') and cls.model_args is not None and hasattr(cls.model_args, 'mask_embedding_sentence') and cls.model_args.mask_embedding_sentence:
-        # 找到[MASK]位置并提取其表示
-        mask_token_id = cls.config.mask_token_id if hasattr(cls.config, 'mask_token_id') else 103
-        
-        # 为每个句子找到mask token位置
-        batch_size_flat = input_ids.size(0)
+    if cot_mode:
+        pooler_output = _extract_cot_pooler(
+            cls, encoder, input_ids, attention_mask, evaluation=False
+        )
+        anchor_h = pooler_output[:, 0, 1, :]  # z1_m2 summary
+        cot_loss = compute_cot_loss(cls, pooler_output, num_sent, anchor_h.device)
+    else:
+        flat_ids = input_ids.view((-1, input_ids.size(-1)))
+        flat_mask = attention_mask.view((-1, attention_mask.size(-1)))
+        outputs = encoder(
+            input_ids=flat_ids,
+            attention_mask=flat_mask,
+            token_type_ids=token_type_ids,
+            position_ids=position_ids,
+            head_mask=head_mask,
+            inputs_embeds=inputs_embeds,
+            output_attentions=output_attentions,
+            output_hidden_states=False,
+            return_dict=True,
+        )
+        mask_token_id = cls.config.mask_token_id if hasattr(cls.config, "mask_token_id") else 103
         sentence_repr_list = []
-        
-        for i in range(batch_size_flat):
-            # 使用argmax找到第一个mask token位置，兼容MPS后端
-            mask_mask = (input_ids[i] == mask_token_id)
+        for i in range(flat_ids.size(0)):
+            mask_mask = flat_ids[i] == mask_token_id
             if mask_mask.any():
-                # 使用argmax找到第一个True的位置（即第一个[MASK]的位置）
                 mask_pos = mask_mask.long().argmax().item()
                 sentence_repr_list.append(outputs.last_hidden_state[i, mask_pos, :])
             else:
-                # 如果没有[MASK]，回退到[CLS]
                 sentence_repr_list.append(outputs.last_hidden_state[i, 0, :])
-        
-        sentence_repr = torch.stack(sentence_repr_list, dim=0)  # (batch_size * num_sent, hidden_dim)
-    else:
-        # 原始方式：提取CLS token作为句子表示
-        sentence_repr = outputs.last_hidden_state[:, 0, :]  # (batch_size * num_sent, hidden_dim)
-    
-    # 重塑为 (batch_size, num_sent, hidden_dim)
-    sentence_repr = sentence_repr.view(batch_size, num_sent, -1)
-    
-    # 提取锚点样本h：从MASK位置提取的原始表示（不归一化，保持原始信号）
-    # sentence_repr shape: (batch_size, num_sent, hidden_dim)
-    # num_sent 现在为 1（单视图）
-    anchor_h = sentence_repr[:, 0]  # (batch_size, hidden_dim)
-    
-    # 通过多语义分解增强获取所有子语义h_i和h_i_enhanced（不提前归一化）
-    # h_i_list: list of (batch_size, hidden_dim) 所有子语义h_i（分解后的原始表示）
-    # h_i_enhanced_list: list of (batch_size, hidden_dim) 所有增强后的子语义h_i_enhanced
-    h_i_list, h_i_enhanced_list, decomp_orth_loss = cls.multisemantic_spr(
-        anchor_h, 
-        compute_orth_loss=False, 
-        return_all_semantics=True
+        sentence_repr = torch.stack(sentence_repr_list, dim=0).view(batch_size, num_sent, -1)
+        anchor_h = sentence_repr[:, 0]
+        cot_loss = torch.tensor(0.0, device=anchor_h.device)
+
+    h_i_list, h_i_enhanced_list, _ = cls.multisemantic_spr(
+        anchor_h,
+        compute_orth_loss=False,
+        return_all_semantics=True,
     )
-    
+
     h_i_enhanced_stacked = torch.stack(h_i_enhanced_list, dim=1)
     T_pred = cls.theme_compressor(h_i_enhanced_stacked, normalize=True)
-    
-    # 使用残差融合器融合所有增强后的子语义h_i_enhanced与原始h，得到综合语义表示h+
-    # 通过残差连接放大子语义信号，同时保留原始h的信息
-    h_plus = cls.residual_fusion(anchor_h, h_i_enhanced_list)  # (batch_size, hidden_dim)
-    
-    # ========== 计算综合语义InfoNCE损失 ==========
-    # - 锚点：h[batch_idx]
-    # - 正样本：h+[batch_idx]（残差融合后的结果）
-    # - 负样本：批次内其他句子的h[j] (j != batch_idx)
-    
-    loss_fct = nn.CrossEntropyLoss()
-    
-    # 归一化用于计算相似度（仅在计算时归一化）
-    anchor_h_norm = F.normalize(anchor_h, p=2, dim=-1)
-    h_plus_norm = F.normalize(h_plus, p=2, dim=-1)
-    
-    # 计算正样本对相似度（anchor_h[i] 与 h_plus[i]）
-    pos_sim_global = (anchor_h_norm * h_plus_norm).sum(dim=-1, keepdim=True) / cls.temperature  # (batch_size, 1)
-    pos_sim_global = torch.clamp(pos_sim_global, min=-50.0, max=50.0)
-    
-    # 计算负样本对相似度（anchor_h[i] 与 anchor_h[j], i != j）
-    neg_sim_global = torch.mm(anchor_h_norm, anchor_h_norm.t()) / cls.temperature  # (batch_size, batch_size)
-    
-    # 将对角线位置设为负无穷
-    eye_mask_global = torch.eye(batch_size, device=anchor_h_norm.device, dtype=torch.bool)
-    neg_sim_global = neg_sim_global.masked_fill(eye_mask_global, float('-inf'))
-    
-    # 数值稳定性保护
-    neg_sim_global = torch.clamp(neg_sim_global, min=-50.0, max=50.0)
-    neg_sim_global = neg_sim_global.masked_fill(eye_mask_global, float('-inf'))
-    
-    # 组合相似度矩阵：[正样本对, 负样本对]
-    cos_sim_global = torch.cat([pos_sim_global, neg_sim_global], dim=1)  # (batch_size, batch_size + 1)
-    
-    # 标签：第一列（索引0）是正样本对
-    labels_global = torch.zeros(batch_size, dtype=torch.long, device=anchor_h_norm.device)
-    
-    # 计算综合语义InfoNCE损失
-    global_infonce_loss = loss_fct(cos_sim_global, labels_global)
-    
-    # ========== 主题向量监督 L_sup ==========
+    h_plus = cls.residual_fusion(anchor_h, h_i_enhanced_list)
+
     sup_loss = torch.tensor(0.0, device=anchor_h.device)
     if theme_targets is not None:
         theme_targets = theme_targets.to(anchor_h.device, dtype=anchor_h.dtype)
         if getattr(cls, "lambda_sup", 0.0) > 0:
             sup_loss = cls.theme_supervision_loss(T_pred, theme_targets)
 
-    # ========== 总损失 ==========
-    # L = L_global + λ_sup·L_sup
-    total_loss = (
-        global_infonce_loss
-        + getattr(cls, "lambda_sup", 0.0) * sup_loss
-    )
-    
-    # 使用正样本h+作为输出表示
+    # L = L_cot + λ_sup·L_sup
+    total_loss = cot_loss + getattr(cls, "lambda_sup", 0.0) * sup_loss
+
     logits = h_plus
 
     if not return_dict:
-        output = (logits,) + outputs[2:]
+        output = (logits,)
         return ((total_loss,) + output) if total_loss is not None else output
-    
+
     return SequenceClassifierOutput(
         loss=total_loss,
         logits=logits,
-        hidden_states=outputs.hidden_states,
-        attentions=outputs.attentions,
+        hidden_states=None,
+        attentions=None,
     )
 
 
@@ -613,59 +713,48 @@ def sentemb_forward(
     return_aspects=False,
 ):
     """
-    句子嵌入前向传播（用于评估）
-    返回融合后的多语义句子表示
-    支持SentEval STS任务：每个句子独立处理
-    
-    输入:
-        input_ids: (batch_size, seq_len) - 一批句子，每个句子已经用模板包裹
-        attention_mask: (batch_size, seq_len)
-    
-    输出:
-        pooler_output: (batch_size, hidden_dim) - 每个句子的融合表示
+    句子嵌入前向传播（评估/推理）：CoT summary MASK m2 → 分解融合。
     """
     return_dict = return_dict if return_dict is not None else cls.config.use_return_dict
+    cot_mode = _uses_cot(cls)
 
-    # BERT编码
-    # input_ids shape: (batch_size, seq_len) - 例如 (8, 128)
-    outputs = encoder(
-        input_ids=input_ids,
-        attention_mask=attention_mask,
-        token_type_ids=token_type_ids,
-        position_ids=position_ids,
-        head_mask=head_mask,
-        inputs_embeds=inputs_embeds,
-        output_attentions=output_attentions,
-        output_hidden_states=False,
-        return_dict=True,
-    )
+    if cot_mode and input_ids.dim() == 2:
+        input_ids = input_ids.unsqueeze(1)
+        attention_mask = attention_mask.unsqueeze(1)
 
-    # 提取句子表示 (从每个句子的MASK位置)
-    if hasattr(cls, 'model_args') and cls.model_args is not None and hasattr(cls.model_args, 'mask_embedding_sentence') and cls.model_args.mask_embedding_sentence:
-        mask_token_id = cls.config.mask_token_id if hasattr(cls.config, 'mask_token_id') else 103
-        
-        # 为每个句子提取mask位置
-        # input_ids.size(0) = batch_size (批次中的句子数)
+    if cot_mode:
+        pooler_output = _extract_cot_pooler(
+            cls, encoder, input_ids, attention_mask, evaluation=True
+        )
+        sentence_repr = pooler_output[:, 0, 1, :]
+    else:
+        outputs = encoder(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            token_type_ids=token_type_ids,
+            position_ids=position_ids,
+            head_mask=head_mask,
+            inputs_embeds=inputs_embeds,
+            output_attentions=output_attentions,
+            output_hidden_states=False,
+            return_dict=True,
+        )
+        mask_token_id = cls.config.mask_token_id if hasattr(cls.config, "mask_token_id") else 103
         sentence_repr_list = []
         for i in range(input_ids.size(0)):
-            # 使用argmax找到第一个mask token位置，兼容MPS后端
-            mask_mask = (input_ids[i] == mask_token_id)
+            mask_mask = input_ids[i] == mask_token_id
             if mask_mask.any():
-                # 使用argmax找到第一个True的位置（即第一个[MASK]的位置）
                 mask_pos = mask_mask.long().argmax().item()
                 sentence_repr_list.append(outputs.last_hidden_state[i, mask_pos, :])
             else:
                 sentence_repr_list.append(outputs.last_hidden_state[i, 0, :])
-        sentence_repr = torch.stack(sentence_repr_list, dim=0)  # (batch_size, hidden_dim)
-    else:
-        sentence_repr = outputs.last_hidden_state[:, 0, :]  # (batch_size, hidden_dim)
-    
-    # 多语义分解增强处理
+        sentence_repr = torch.stack(sentence_repr_list, dim=0)
+
     with torch.no_grad():
-        h_i_list, h_i_enhanced_list, _ = cls.multisemantic_spr(
+        _, h_i_enhanced_list, _ = cls.multisemantic_spr(
             sentence_repr,
             compute_orth_loss=False,
-            return_all_semantics=True
+            return_all_semantics=True,
         )
         pooler_output = cls.residual_fusion(sentence_repr, h_i_enhanced_list)
         pooler_output = F.normalize(pooler_output, p=2, dim=-1)
@@ -677,13 +766,13 @@ def sentemb_forward(
 
     if not return_dict:
         if return_aspects:
-            return (outputs[0], pooler_output, aspect_reprs) + outputs[2:]
-        return (outputs[0], pooler_output) + outputs[2:]
+            return (pooler_output, aspect_reprs)
+        return (pooler_output,)
 
     result = BaseModelOutputWithPoolingAndCrossAttentions(
         pooler_output=pooler_output,
-        last_hidden_state=outputs.last_hidden_state,
-        hidden_states=outputs.hidden_states,
+        last_hidden_state=None,
+        hidden_states=None,
     )
     if return_aspects:
         result["aspect_reprs"] = aspect_reprs
@@ -708,7 +797,6 @@ class BertForPrismDecomp(BertPreTrainedModel):
         # 从model_args获取温度参数、lambda2参数和num_semantics参数
         temperature = getattr(self.model_args, 'temperature', 0.05) if self.model_args else 0.05
         lambda2 = getattr(self.model_args, 'lambda2', 0.1) if self.model_args else 0.1
-        lambda2 = getattr(self.model_args, 'lambda2', 0.1) if self.model_args else 0.1
         lambda_sup = getattr(self.model_args, 'lambda_sup', 0.0) if self.model_args else 0.0
         compress_dim = getattr(self.model_args, 'compress_dim', 8) if self.model_args else 8
         sup_loss_type = getattr(self.model_args, 'sup_loss_type', 'cosine') if self.model_args else 'cosine'
@@ -716,6 +804,7 @@ class BertForPrismDecomp(BertPreTrainedModel):
         compressor_hidden = getattr(self.model_args, 'compressor_hidden', 256) if self.model_args else 256
         projection_seed = getattr(self.model_args, 'projection_seed', 42) if self.model_args else 42
         compressor_ckpt = getattr(self.model_args, 'compressor_ckpt', None) if self.model_args else None
+        scd_temp = getattr(self.model_args, 'scd_temp', 0.05) if self.model_args else 0.05
         num_semantics = getattr(self.model_args, 'num_semantics', 7) if self.model_args else 7
         
         prism_decomp_init(
@@ -726,11 +815,15 @@ class BertForPrismDecomp(BertPreTrainedModel):
             compress_dim=compress_dim,
             lambda_sup=lambda_sup,
             sup_loss_type=sup_loss_type,
+            scd_temp=scd_temp,
             compress_mode=compress_mode,
             compressor_hidden=compressor_hidden,
             projection_seed=projection_seed,
             compressor_ckpt=compressor_ckpt,
         )
+        self.total_length = 80
+        if self.model_args:
+            self.mask_num = getattr(self.model_args, "mask_num", 2)
 
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
