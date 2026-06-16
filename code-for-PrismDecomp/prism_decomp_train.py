@@ -323,7 +323,7 @@ class OurTrainingArguments(TrainingArguments):
         return device
 
 
-from parse_args_util import load_configs
+from parse_args_util import load_configs, load_yaml_config
 from wiki_pseudo_dataset import load_theme_targets, merge_theme_cache_into_dataset_map_fn
 from aspect_template_utils import load_theme_cache_stats, validate_theme_cache
 
@@ -398,14 +398,16 @@ def main():
     # or by passing the --help flag to this script.
     # We now keep distinct sets of args, for a cleaner separation of concerns.
     
-    # 获取平台特定的配置文件
-    config_file = get_platform_config_file()
-    print(f"使用配置文件: {config_file}")
-    
     parser = HfArgumentParser((ModelArguments, DataTrainingArguments, OurTrainingArguments))
 
     config_custom_file = sys.argv[1] if len(sys.argv) > 1 else ''
-    args_list = load_configs(default_file=config_file, custom_file=config_custom_file)
+    if config_custom_file and os.path.basename(config_custom_file) == 'train_interpretable.yaml':
+        print(f"使用独立配置（不 merge 平台/default）: {config_custom_file}")
+        args_list = load_yaml_config(config_custom_file)
+    else:
+        config_file = get_platform_config_file()
+        print(f"使用配置文件: {config_file} + {config_custom_file or '(无自定义)'}")
+        args_list = load_configs(default_file=config_file, custom_file=config_custom_file)
     
     # 根据平台自动设置设备相关参数
     platform_type = detect_platform()

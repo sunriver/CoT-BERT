@@ -1,3 +1,5 @@
+# Mac: /Users/lmf/Documents/local/code/pretrain_models/bert-base-uncased
+# Linux GPU: /data/output/workspace_gpu2/pretrain_models/bert-base-uncased
 model_name_or_path: "/Users/lmf/Documents/local/code/pretrain_models/bert-base-uncased"
 train_file: "../data/wiki1m_for_simcse.txt"
 output_dir: "../result/PrismDecomp-Interpretable-BERT"
@@ -9,7 +11,10 @@ max_seq_length: 32
 evaluation_strategy: steps
 metric_for_best_model: stsb_spearman
 load_best_model_at_end: true
-save_steps: 125
+eval_steps: 100
+save_steps: 100
+save_strategy: steps
+logging_steps: 10
 overwrite_output_dir: true
 do_train: true
 fp16: false
