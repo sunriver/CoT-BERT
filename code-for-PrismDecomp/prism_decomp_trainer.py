@@ -59,6 +59,13 @@ sys.path.insert(0, PATH_TO_SENTEVAL)
 import senteval
 import numpy as np
 
+from cot_prompt_utils import (
+    build_single_cot_eval_input,
+    parse_all_cot_templates,
+    register_cot_templates_on_model,
+    uses_cot_multi_view,
+)
+
 logger = logging.get_logger(__name__)
 
 class PrismDecompTrainer(Trainer):
@@ -89,6 +96,13 @@ class PrismDecompTrainer(Trainer):
         评估函数：使用SentEval进行STS任务评估
         支持多语义表示的性能评估
         """
+        model_args = getattr(self, "model_args", None)
+        if model_args and uses_cot_multi_view(model_args):
+            parse_all_cot_templates(model_args, self.tokenizer)
+            register_cot_templates_on_model(self.model, model_args, self.tokenizer)
+            self.model.model_args = model_args
+
+        max_seq_length = getattr(self.args, "max_seq_length", 32) or 32
 
         # SentEval prepare and batcher
         def prepare(params, samples):
@@ -105,28 +119,38 @@ class PrismDecompTrainer(Trainer):
             sentences = [' '.join(s) for s in batch]
 
             # 使用模板编码每个句子
-            if self.model_args and hasattr(self.model_args, 'mask_embedding_sentence') and self.model_args.mask_embedding_sentence:
-                # 应用模板：构造完整模板字符串（优化：利用tokenizer批量处理）
-                template = self.model_args.mask_embedding_sentence_template
-                parts = template.split('[X]')
-                prefix = parts[0]  # "The sentence of \""
-                suffix = parts[1] if len(parts) > 1 else " means [MASK]."
-                
-                # 为每个句子构造完整的模板字符串
-                templated_sentences = []
-                for sent in sentences:
-                    # 构造完整模板字符串："The sentence of "原句子" means [MASK]."
-                    full_text = prefix + sent + suffix
-                    templated_sentences.append(full_text)
-                
-                # 批量编码（利用tokenizer的内置优化）
-                batch_input = self.tokenizer.batch_encode_plus(
-                    templated_sentences,
-                    return_tensors='pt',
-                    padding=True,
-                )
-                for k in batch_input:
-                    batch_input[k] = batch_input[k].to(self.args.device)
+            if self.model_args and getattr(self.model_args, 'mask_embedding_sentence', False):
+                if uses_cot_multi_view(self.model_args):
+                    all_input_ids, all_masks = [], []
+                    for sent in sentences:
+                        ids = build_single_cot_eval_input(
+                            sent, self.model_args, self.tokenizer, max_seq_length
+                        )
+                        all_input_ids.append(ids)
+                        all_masks.append([1] * len(ids))
+                    max_len = max(len(x) for x in all_input_ids)
+                    pad_id = self.tokenizer.pad_token_id
+                    for i in range(len(all_input_ids)):
+                        pad = max_len - len(all_input_ids[i])
+                        all_input_ids[i] = all_input_ids[i] + [pad_id] * pad
+                        all_masks[i] = all_masks[i] + [0] * pad
+                    batch_input = {
+                        'input_ids': torch.tensor(all_input_ids, dtype=torch.long, device=self.args.device),
+                        'attention_mask': torch.tensor(all_masks, dtype=torch.long, device=self.args.device),
+                    }
+                else:
+                    template = self.model_args.mask_embedding_sentence_template
+                    parts = template.split('[X]')
+                    prefix = parts[0]
+                    suffix = parts[1] if len(parts) > 1 else " means [MASK]."
+                    templated_sentences = [prefix + sent + suffix for sent in sentences]
+                    batch_input = self.tokenizer.batch_encode_plus(
+                        templated_sentences,
+                        return_tensors='pt',
+                        padding=True,
+                    )
+                    for k in batch_input:
+                        batch_input[k] = batch_input[k].to(self.args.device)
             else:
                 # 不使用模板，直接编码
                 batch_input = self.tokenizer.batch_encode_plus(

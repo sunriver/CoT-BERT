@@ -392,8 +392,19 @@ def _extract_cot_pooler(cls, encoder, input_ids, attention_mask, evaluation=Fals
         return_dict=True,
     )
     last_hidden = outputs.last_hidden_state
-    pooler = last_hidden[flat_ids == cls.mask_token_id]
-    pooler = pooler.view(-1, cls.mask_num, pooler.shape[-1])
+    flat_size = flat_ids.size(0)
+    hidden_dim = last_hidden.size(-1)
+    mask_rows = []
+    for i in range(flat_size):
+        positions = (flat_ids[i] == cls.mask_token_id).nonzero(as_tuple=True)[0]
+        if positions.numel() < cls.mask_num:
+            raise RuntimeError(
+                f"Expected at least {cls.mask_num} [MASK] tokens in sequence {i}, "
+                f"found {positions.numel()}. Check CoT template encoding for eval/train."
+            )
+        for k in range(cls.mask_num):
+            mask_rows.append(last_hidden[i, positions[k], :])
+    pooler = torch.stack(mask_rows, dim=0).view(flat_size, cls.mask_num, hidden_dim)
     pooler = pooler.view(batch_size, num_sent, cls.mask_num, -1)
 
     if getattr(ma, "mask_embedding_sentence_delta", False) and (
