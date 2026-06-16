@@ -146,10 +146,6 @@ class ModelArguments:
         default=0.0,
         metadata={"help": "Weight for theme vector supervision L_sup (Stage2)"}
     )
-    lambda_theme: float = field(
-        default=0.0,
-        metadata={"help": "Weight for theme contrastive loss L_theme"}
-    )
     theme_cache_path: Optional[str] = field(
         default=None,
         metadata={"help": "Path to wiki_theme_cache.jsonl from Stage1 (read-only)"}
@@ -554,9 +550,9 @@ def main():
                 num_proc=data_args.preprocessing_num_workers,
                 load_from_cache_file=not data_args.overwrite_cache,
             )
-        elif model_args.lambda_sup > 0 or model_args.lambda_theme > 0:
+        elif model_args.lambda_sup > 0:
             logger.warning(
-                "lambda_sup/lambda_theme > 0 but theme_cache_path missing; supervision disabled."
+                "lambda_sup > 0 but theme_cache_path missing; supervision disabled."
             )
 
         train_dataset = train_raw.map(

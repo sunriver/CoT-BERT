@@ -18,7 +18,7 @@ logging_steps: 10
 overwrite_output_dir: true
 do_train: true
 fp16: false
-preprocessing_num_workers: 4
+preprocessing_num_workers: 10
 use_mps_device: false
 dataloader_drop_last: true
 seed: 0
@@ -26,7 +26,8 @@ seed: 0
 # PrismDecomp core
 num_semantics: 7
 temperature: 0.05
-lambda2: 0.1
+# lambda2: Stage2 不对 T_pred 做软正交，此项不生效（Stage1a 压缩器训练仍可用）
+# lambda2: 0.1
 orthogonal_constraint: true
 semantic_weights_learnable: true
 
@@ -34,7 +35,6 @@ remove_unused_columns: false
 
 # Theme cache Stage2 (read-only)
 lambda_sup: 1.0
-lambda_theme: 0.5
 theme_cache_path: "preprocessed/wiki_theme_cache.jsonl"
 compress_dim: 8
 compress_mode: mlp

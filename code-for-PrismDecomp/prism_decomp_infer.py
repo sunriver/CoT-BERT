@@ -92,7 +92,6 @@ def main():
         temperature = 0.05
         lambda2 = 0.1
         lambda_sup = 0.0
-        lambda_theme = 0.0
         compress_dim = args.compress_dim
         compress_mode = aspect_cfg.get("compress_mode", "mlp")
         compressor_hidden = aspect_cfg.get("compressor_hidden", 256)

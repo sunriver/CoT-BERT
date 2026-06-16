@@ -7,14 +7,10 @@ from typing import Optional, Tuple
 from transformers.models.bert.modeling_bert import BertPreTrainedModel, BertModel
 from transformers.modeling_outputs import SequenceClassifierOutput, BaseModelOutputWithPoolingAndCrossAttentions
 
-from template_supervision_losses import (
-    ThemeVectorSupervisionLoss,
-    ThemeContrastiveLoss,
-)
+from template_supervision_losses import ThemeVectorSupervisionLoss
 from theme_compressor import (
     SharedThemeCompressor,
     load_compressor_checkpoint,
-    theme_code_orth_loss,
 )
 
 
@@ -369,7 +365,6 @@ def prism_decomp_init(
     num_semantics=7,
     compress_dim=8,
     lambda_sup=0.0,
-    lambda_theme=0.0,
     sup_loss_type="cosine",
     compress_mode="mlp",
     compressor_hidden=256,
@@ -437,11 +432,9 @@ def prism_decomp_init(
         cls.theme_compressor.load_state_dict(ckpt_compressor.state_dict())
 
     cls.theme_supervision_loss = ThemeVectorSupervisionLoss(loss_type=sup_loss_type)
-    cls.theme_contrastive_loss = ThemeContrastiveLoss(temperature=temperature)
 
     cls.compress_dim = compress_dim
     cls.lambda_sup = lambda_sup
-    cls.lambda_theme = lambda_theme
     cls.temperature = temperature
     cls.lambda2 = lambda2
     
@@ -535,7 +528,6 @@ def prism_decomp_forward(cls,
     
     h_i_enhanced_stacked = torch.stack(h_i_enhanced_list, dim=1)
     T_pred = cls.theme_compressor(h_i_enhanced_stacked, normalize=True)
-    theme_orth_loss = theme_code_orth_loss(T_pred)
     
     # 使用残差融合器融合所有增强后的子语义h_i_enhanced与原始h，得到综合语义表示h+
     # 通过残差连接放大子语义信号，同时保留原始h的信息
@@ -576,23 +568,18 @@ def prism_decomp_forward(cls,
     # 计算综合语义InfoNCE损失
     global_infonce_loss = loss_fct(cos_sim_global, labels_global)
     
-    # ========== 主题向量监督 L_sup + 主题对比 L_theme ==========
+    # ========== 主题向量监督 L_sup ==========
     sup_loss = torch.tensor(0.0, device=anchor_h.device)
-    theme_con_loss = torch.tensor(0.0, device=anchor_h.device)
     if theme_targets is not None:
         theme_targets = theme_targets.to(anchor_h.device, dtype=anchor_h.dtype)
         if getattr(cls, "lambda_sup", 0.0) > 0:
             sup_loss = cls.theme_supervision_loss(T_pred, theme_targets)
-        if getattr(cls, "lambda_theme", 0.0) > 0:
-            theme_con_loss = cls.theme_contrastive_loss(T_pred, theme_targets)
 
     # ========== 总损失 ==========
-    # L = L_global + λ_theme·L_theme + λ_sup·L_sup + λ₂·L_orth
+    # L = L_global + λ_sup·L_sup
     total_loss = (
         global_infonce_loss
-        + cls.lambda2 * theme_orth_loss
         + getattr(cls, "lambda_sup", 0.0) * sup_loss
-        + getattr(cls, "lambda_theme", 0.0) * theme_con_loss
     )
     
     # 使用正样本h+作为输出表示
@@ -723,7 +710,6 @@ class BertForPrismDecomp(BertPreTrainedModel):
         lambda2 = getattr(self.model_args, 'lambda2', 0.1) if self.model_args else 0.1
         lambda2 = getattr(self.model_args, 'lambda2', 0.1) if self.model_args else 0.1
         lambda_sup = getattr(self.model_args, 'lambda_sup', 0.0) if self.model_args else 0.0
-        lambda_theme = getattr(self.model_args, 'lambda_theme', 0.0) if self.model_args else 0.0
         compress_dim = getattr(self.model_args, 'compress_dim', 8) if self.model_args else 8
         sup_loss_type = getattr(self.model_args, 'sup_loss_type', 'cosine') if self.model_args else 'cosine'
         compress_mode = getattr(self.model_args, 'compress_mode', 'mlp') if self.model_args else 'mlp'
@@ -739,7 +725,6 @@ class BertForPrismDecomp(BertPreTrainedModel):
             num_semantics=num_semantics,
             compress_dim=compress_dim,
             lambda_sup=lambda_sup,
-            lambda_theme=lambda_theme,
             sup_loss_type=sup_loss_type,
             compress_mode=compress_mode,
             compressor_hidden=compressor_hidden,
