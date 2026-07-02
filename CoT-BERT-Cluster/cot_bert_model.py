@@ -9,6 +9,10 @@ from transformers.models.bert.modeling_bert import BertPreTrainedModel, BertMode
 from transformers.models.roberta.modeling_roberta import RobertaPreTrainedModel, RobertaModel
 from transformers.modeling_outputs import SequenceClassifierOutput, BaseModelOutputWithPoolingAndCrossAttentions
 
+from lmf_log_util import getMyLogger
+
+logger = getMyLogger(__name__)
+
 
 class MLPLayer(nn.Module):
     """
@@ -171,6 +175,14 @@ def cl_init(cls, config):
     cls.init_weights()
 
 
+def _momentum_bank_is_main_process():
+    return not dist.is_initialized() or dist.get_rank() == 0
+
+
+def _momentum_bank_format_stats(stats):
+    return " ".join(f"{k}={v}" for k, v in stats.items())
+
+
 def momentum_bank_init(cls, config, encoder):
     """Initialize momentum key encoder and feature queue buffers."""
     cls.encoder_k = copy.deepcopy(encoder)
@@ -235,11 +247,14 @@ def momentum_bank_run_kmeans(cls):
     try:
         import faiss
     except ImportError:
+        if _momentum_bank_is_main_process():
+            logger.warning("[MomentumBank/KMeans] faiss not installed, skipping K-Means update")
         return
 
     features = cls.queue.T.contiguous().cpu().numpy().astype("float32")
     d = features.shape[1]
-    k = min(cls.model_args.num_clusters, features.shape[0])
+    queue_size = features.shape[0]
+    k = min(cls.model_args.num_clusters, queue_size)
     if k < 2:
         return
 
@@ -254,6 +269,20 @@ def momentum_bank_run_kmeans(cls):
     _, cluster_ids = kmeans.index.search(features, 1)
     cluster_ids = torch.tensor(cluster_ids.squeeze(), device=cls.queue.device, dtype=torch.long)
     cls.queue_cluster_ids.copy_(cluster_ids)
+
+    counts = torch.bincount(cluster_ids, minlength=k)
+    nonzero_counts = counts[counts > 0].float()
+    stats = {
+        "k": k,
+        "queue_size": queue_size,
+        "unique_clusters": int(cluster_ids.unique().numel()),
+        "cluster_size_min": int(nonzero_counts.min().item()) if nonzero_counts.numel() > 0 else 0,
+        "cluster_size_max": int(nonzero_counts.max().item()) if nonzero_counts.numel() > 0 else 0,
+        "cluster_size_mean": round(nonzero_counts.mean().item(), 2) if nonzero_counts.numel() > 0 else 0.0,
+    }
+    cls._momentum_kmeans_stats = stats
+    if _momentum_bank_is_main_process():
+        logger.info("[MomentumBank/KMeans] %s", _momentum_bank_format_stats(stats))
 
 
 def momentum_bank_soft_suppress_queue_logits(cls, q, queue_logits):
@@ -276,6 +305,19 @@ def momentum_bank_soft_suppress_queue_logits(cls, q, queue_logits):
     )
 
     weights = (1.0 - p_fn).clamp(min=1e-6).pow(beta)
+
+    if cls.training:
+        with torch.no_grad():
+            cls._momentum_bank_stats = {
+                "same_cluster_rate": round(same_cluster.float().mean().item(), 4),
+                "p_fn_mean": round(p_fn.mean().item(), 4),
+                "p_fn_max": round(p_fn.max().item(), 4),
+                "weight_mean": round(weights.mean().item(), 4),
+                "weight_min": round(weights.min().item(), 6),
+                "strong_suppress_rate": round((weights < 0.1).float().mean().item(), 4),
+                "queue_logits_mean": round(queue_logits.mean().item(), 4),
+            }
+
     return queue_logits + torch.log(weights)
 
 

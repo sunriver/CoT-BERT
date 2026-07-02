@@ -71,6 +71,30 @@ class KMeansUpdateCallback(TrainerCallback):
             if state.is_world_process_zero:
                 logger.info("K-Means cluster update at step %s", state.global_step)
 
+
+class MomentumBankMonitorCallback(TrainerCallback):
+    """Log momentum bank soft-suppression stats aligned with Trainer logging_steps."""
+
+    def on_step_end(self, args, state, control, model=None, **kwargs):
+        if model is None or state.global_step <= 0:
+            return
+        if state.global_step % args.logging_steps != 0:
+            return
+        if not state.is_world_process_zero:
+            return
+
+        unwrapped = model.module if hasattr(model, "module") else model
+        model_args = getattr(unwrapped, "model_args", None)
+        if model_args is None or not getattr(model_args, "use_momentum_bank", False):
+            return
+
+        stats = getattr(unwrapped, "_momentum_bank_stats", None)
+        if stats is None:
+            return
+
+        parts = " ".join(f"{k}={v}" for k, v in stats.items())
+        logger.info("[MomentumBank/SoftSuppress] step=%s %s", state.global_step, parts)
+
 @dataclass
 class ModelArguments:
     """
@@ -997,6 +1021,7 @@ def main():
     trainer_callbacks = []
     if model_args.use_momentum_bank:
         trainer_callbacks.append(KMeansUpdateCallback(model_args.kmeans_steps))
+        trainer_callbacks.append(MomentumBankMonitorCallback())
 
     trainer = CLTrainer(
         model=model,
