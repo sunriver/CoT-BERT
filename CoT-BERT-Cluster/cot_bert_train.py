@@ -1020,6 +1020,24 @@ def main():
 
     trainer_callbacks = []
     if model_args.use_momentum_bank:
+        if training_args.do_train and is_main_process(training_args.local_rank):
+            try:
+                import faiss
+
+                num_gpus = faiss.get_num_gpus()
+                logger.info(
+                    "[MomentumBank] faiss %s, num_gpus=%s (K-Means uses GPU when num_gpus>0)",
+                    faiss.__version__,
+                    num_gpus,
+                )
+                if num_gpus == 0:
+                    logger.warning(
+                        "[MomentumBank] faiss-gpu not detected; K-Means will run on CPU"
+                    )
+            except ImportError:
+                logger.warning(
+                    "[MomentumBank] faiss not installed; K-Means updates will be skipped"
+                )
         trainer_callbacks.append(KMeansUpdateCallback(model_args.kmeans_steps))
         trainer_callbacks.append(MomentumBankMonitorCallback())
 

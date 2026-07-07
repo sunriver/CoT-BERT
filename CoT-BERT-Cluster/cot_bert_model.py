@@ -258,8 +258,21 @@ def momentum_bank_run_kmeans(cls):
     if k < 2:
         return
 
-    kmeans = faiss.Kmeans(d, k, niter=20, verbose=False)
-    kmeans.train(features)
+    use_gpu = faiss.get_num_gpus() > 0
+    try:
+        kmeans = faiss.Kmeans(d, k, niter=20, verbose=False, gpu=use_gpu)
+        kmeans.train(features)
+    except Exception as exc:
+        if not use_gpu:
+            raise
+        if _momentum_bank_is_main_process():
+            logger.warning(
+                "[MomentumBank/KMeans] GPU K-Means failed (%s), falling back to CPU",
+                exc,
+            )
+        kmeans = faiss.Kmeans(d, k, niter=20, verbose=False, gpu=False)
+        kmeans.train(features)
+        use_gpu = False
 
     centroids = torch.tensor(kmeans.centroids, device=cls.queue.device, dtype=cls.queue.dtype)
     cls.cluster_centroids[:k].copy_(F.normalize(centroids, dim=-1))
@@ -275,6 +288,7 @@ def momentum_bank_run_kmeans(cls):
     stats = {
         "k": k,
         "queue_size": queue_size,
+        "kmeans_device": "gpu" if use_gpu else "cpu",
         "unique_clusters": int(cluster_ids.unique().numel()),
         "cluster_size_min": int(nonzero_counts.min().item()) if nonzero_counts.numel() > 0 else 0,
         "cluster_size_max": int(nonzero_counts.max().item()) if nonzero_counts.numel() > 0 else 0,
